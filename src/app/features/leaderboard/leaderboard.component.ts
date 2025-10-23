@@ -1,11 +1,11 @@
 // src/app/features/leaderboard/leaderboard.component.ts
-import { Component, OnDestroy, inject } from '@angular/core';
+import { ChangeDetectorRef, Component, NgZone, OnDestroy, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatTableModule } from '@angular/material/table';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
-import { MatButtonModule } from '@angular/material/button';
+
 import { ActivatedRoute } from '@angular/router';
 
 import { Score } from '../../../core/models/score';
@@ -16,27 +16,25 @@ import { WodService } from '../../../core/services/wod.service';
 @Component({
   standalone: true,
   selector: 'app-leaderboard',
-  imports: [CommonModule, FormsModule, MatTableModule, MatFormFieldModule, MatSelectModule, MatButtonModule],
+  imports: [CommonModule, FormsModule, MatTableModule, MatFormFieldModule, MatSelectModule],
   template: `
     <h2>Leaderboard</h2>
 
     <div class="filters">
       <mat-form-field appearance="outline" class="wod">
         <mat-label>WOD</mat-label>
-        <mat-select [(ngModel)]="wodId">
+        <mat-select [(ngModel)]="wodId" (selectionChange)="onSelectWod($event.value)">
           <mat-option *ngFor="let w of wods" [value]="w.id">
             {{ w.name }} — {{ w.category }} ({{ w.scoringMode }})
           </mat-option>
         </mat-select>
       </mat-form-field>
-
-      <button mat-raised-button color="primary" (click)="load()" [disabled]="!wodId || !category">
-        Ver clasificación
-      </button>
     </div>
 
     <div class="meta" *ngIf="currentWod">
       <span><strong>WOD:</strong> {{ currentWod.name }}</span>
+      <span>•</span>
+      <span><strong>Categoría:</strong> {{ currentWod.category }}</span>
       <span>•</span>
       <span><strong>Scoring:</strong> {{ currentWod.scoringMode }}</span>
       <span *ngIf="currentWod.description">•</span>
@@ -70,16 +68,15 @@ import { WodService } from '../../../core/services/wod.service';
       <tr mat-row *matRowDef="let row; columns: cols;"></tr>
     </table>
 
-    <p *ngIf="rows.length === 0 && wodId" class="empty">
-      Aún no hay resultados para este WOD en {{ category }}.
+    <p *ngIf="!rows.length && currentWod" class="empty">
+      Aún no hay resultados para este WOD en {{ currentWod.category }}.
     </p>
   `,
   styles: [`
     .filters { display:flex; gap:12px; align-items:center; margin-bottom: 12px; flex-wrap: wrap; }
-    .wod { min-width: 280px; }
-    .cat { min-width: 160px; }
+    .wod { min-width: 320px; }
     .table { width: 100%; max-width: 1100px; }
-    .meta { display:flex; gap:8px; align-items:center; margin: 8px 0 16px; opacity: 0.85; }
+    .meta { display:flex; gap:8px; align-items:center; margin: 8px 0 16px; opacity: 0.85; flex-wrap: wrap; }
     .empty { opacity: 0.7; margin-top: 8px; }
   `]
 })
@@ -87,7 +84,8 @@ export class LeaderboardComponent implements OnDestroy {
   private scoreSvc = inject(ScoreService);
   private wodsSvc = inject(WodService);
   private route = inject(ActivatedRoute);
-
+  private ngZone = inject(NgZone); 
+  private cdr = inject(ChangeDetectorRef); 
   wods: Wod[] = [];
   currentWod: Wod | null = null;
 
@@ -95,38 +93,59 @@ export class LeaderboardComponent implements OnDestroy {
   cols = ['pos', 'team', 'score'];
 
   wodId = '';
-  category: 'RX' | 'Intermedio' = 'RX';
 
   private sub?: any;
   private wodsSub?: any;
+  private pendingWodFromQuery: string | null = null;
 
   constructor() {
-    // Carga todos los WODs para el selector
-    this.wodsSub = this.wodsSvc.listAll$().subscribe(ws => {
-      this.wods = ws;
-      // si había un wodId (por query param), fija el currentWod
-      if (this.wodId) this.currentWod = this.wods.find(w => w.id === this.wodId) || null;
-    });
-
-    // Lee query params opcionales (?wod=&category=) y autoload
+    // 1) Captura opcional de ?wod=<id> para autoseleccionar
     this.route.queryParams.subscribe(p => {
       const qWod = (p['wod'] || '') as string;
-      if (qWod) this.wodId = qWod;
-      if (this.wodId && this.category) this.load(); // carga automática
+      if (qWod) this.pendingWodFromQuery = qWod;
+      // si ya tenemos lista de wods, intentamos seleccionar
+      this.trySelectPendingWod();
+    });
+
+    // 2) Carga todos los WODs para el selector
+    this.wodsSub = this.wodsSvc.listAll$().subscribe(ws => {
+      this.ngZone.run(() => {
+        this.wods = ws;
+        if (this.wodId) this.currentWod = this.wods.find(w => w.id === this.wodId) || null;
+        this.cdr.markForCheck();
+      });
     });
   }
 
-  load() {
-    // Actualiza metadatos del WOD activo
-    this.currentWod = this.wods.find(w => w.id === this.wodId) || null;
+  private trySelectPendingWod() {
+    if (!this.pendingWodFromQuery || !this.wods.length) return;
+    // si el WOD existe, selecciónalo y carga
+    const exists = this.wods.some(w => w.id === this.pendingWodFromQuery);
+    if (exists) {
+      this.wodId = this.pendingWodFromQuery!;
+      this.onSelectWod(this.wodId);
+      this.pendingWodFromQuery = null;
+    }
+  }
 
-    // Cancela subscripción anterior y suscríbete en tiempo real
+  onSelectWod(id: string) {
+    this.wodId = id;
+    this.currentWod = this.wods.find(w => w.id === id) || null;
+
+    // corta subscripción anterior y suscríbete en vivo a los scores del WOD+categoría del propio WOD
     this.sub?.unsubscribe?.();
+    if (!this.currentWod) {
+      this.rows = [];
+      return;
+    }
     this.sub = this.scoreSvc
       .listForWod$(this.wodId)
       .subscribe(r => {
         // r ya viene ordenado por rankPrimary/Secondary (mejor -> peor)
-        this.rows = r;
+        this.ngZone.run(() => {          // 👈 fuerza entrar al ciclo de Angular
+          this.rows = r;
+          this.cdr.markForCheck();       // 👈 útil si usas OnPush
+        });
       });
   }
 

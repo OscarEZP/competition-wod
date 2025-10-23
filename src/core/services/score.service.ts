@@ -242,16 +242,29 @@ export class ScoreService {
   }
 
   /** Finaliza (bloquea el tiempo si aplica y recalcula ranking como 'finished') */
-  async finish(scoreId: string) {
+  // En ScoreService
+  async finish(scoreId: string, elapsedMs?: number | null) {
     await runTransaction(this.db as any, async (trx) => {
       const ref = doc(this.db, 'scores', scoreId);
       const snap = await trx.get(ref as any);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
+      // finalTimeMs puede venir por parámetro (prioridad), o desde BD, o calcularse con startedAt
       let finalTimeMs = data.finalTimeMs ?? null;
-      if (data.scoringMode === 'time' && data.startedAt && finalTimeMs == null) {
-        finalTimeMs = Date.now() - data.startedAt;
+
+      if (data.scoringMode === 'time') {
+        if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
+          // 1) usar el valor que llega desde UI (más preciso si pausaste/reanudaste)
+          finalTimeMs = elapsedMs;
+        } else if (data.startedAt && finalTimeMs == null) {
+          // 2) fallback: calcular desde startedAt si no teníamos final
+          finalTimeMs = Date.now() - data.startedAt;
+        }
+        // 3) si ya había final en BD, lo respetamos (no lo tocamos)
+      } else {
+        // Para 'reps' y 'load' no hay tiempo final necesario (se mantiene null).
+        finalTimeMs = null;
       }
 
       const ranks = this.computeRanks({
@@ -272,6 +285,7 @@ export class ScoreService {
       } as any);
     });
   }
+
 
   /** Marca DNF y recalcula ranking (usa reps para ordenar DNFs en 'time') */
   async markDNF(scoreId: string) {

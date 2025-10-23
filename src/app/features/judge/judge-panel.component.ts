@@ -1,5 +1,5 @@
 // src/app/features/judge/judge-panel.component.ts
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, signal, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -14,6 +14,8 @@ import { TeamService } from '../../../core/services/team.service';
 import { WodService } from '../../../core/services/wod.service';
 import { Subscription } from 'rxjs';
 
+// ahora soportamos 'paused' para poder detener sin cerrar
+type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
 
 @Component({
   standalone: true,
@@ -56,7 +58,7 @@ import { Subscription } from 'rxjs';
         </mat-select>
       </mat-form-field>
 
-      <!-- Selector de Equipo (rellena teamId / teamName) -->
+      <!-- Selector de Equipo -->
       <mat-form-field class="col-2">
         <mat-label>Equipo</mat-label>
         <mat-select [value]="form.value.teamId || null" (selectionChange)="onSelectTeam($event.value)">
@@ -66,7 +68,7 @@ import { Subscription } from 'rxjs';
         </mat-select>
       </mat-form-field>
 
-      <!-- Campos de sólo lectura (rellenos al elegir equipo) -->
+      <!-- Solo lectura -->
       <mat-form-field>
         <mat-label>Equipo ID</mat-label>
         <input matInput formControlName="teamId" readonly />
@@ -88,6 +90,7 @@ import { Subscription } from 'rxjs';
         Preparar score
       </button>
       <span *ngIf="scoreId()">Score ID: {{ scoreId() }}</span>
+      <span *ngIf="status()"> • Estado: {{ status() }}</span>
     </div>
 
     <!-- Controles dinámicos según scoring -->
@@ -95,19 +98,29 @@ import { Subscription } from 'rxjs';
       <!-- TIEMPO -->
       <div class="timer" *ngIf="form.value.scoringMode === 'time'">
         <div class="time">{{ displayTime() }}</div>
-        <button mat-raised-button color="primary" (click)="startTimer()" [disabled]="isLocked()">Start</button>
-        <button mat-raised-button color="warn" (click)="stopTimer()" [disabled]="isLocked()">Stop</button>
-        <button mat-stroked-button (click)="finish()" [disabled]="isLocked()">Finalizar</button>
-        <button mat-stroked-button color="warn" (click)="markDNF()" [disabled]="isLocked()">DNF</button>
 
+        <button mat-raised-button color="primary"
+          (click)="startTimer()"
+          [disabled]="!canStart()">Start</button>
+
+        <button mat-raised-button color="warn"
+          (click)="stopTimer()"
+          [disabled]="!canStop()">Stop</button>
+
+        <button mat-stroked-button
+          (click)="finish()"
+          [disabled]="!canFinish()">Finalizar</button>
+
+        <button mat-stroked-button color="warn"
+          (click)="markDNF()"
+          [disabled]="!canDNF()">DNF</button>
       </div>
 
       <!-- REPETICIONES -->
       <div class="reps" *ngIf="form.value.scoringMode === 'reps' || form.value.scoringMode === 'time'">
         <div>Reps: <strong>{{ reps() }}</strong> | No-Reps: <strong>{{ noReps() }}</strong></div>
-        <button mat-raised-button (click)="incRep()" [disabled]="isLocked() || isFinishedOrDNF()">+ rep</button>
-        <button mat-raised-button (click)="incNoRep()" [disabled]="isLocked() || isFinishedOrDNF()">+ no-rep</button>
-
+        <button mat-raised-button (click)="incRep()" [disabled]="isLockedForInputs()">+ rep</button>
+        <button mat-raised-button (click)="incNoRep()" [disabled]="isLockedForInputs()">+ no-rep</button>
       </div>
 
       <!-- CARGA -->
@@ -115,17 +128,14 @@ import { Subscription } from 'rxjs';
         <div>Mejor carga: <strong>{{ maxLoad() ?? 0 }}</strong> kg</div>
         <div class="row">
           <input type="number" [(ngModel)]="currentLoad" placeholder="Carga (kg)" />
-          <button mat-stroked-button (click)="saveAttempt()" [disabled]="isLocked() || isFinishedOrDNF()">Guardar intento</button>
-
+          <button mat-stroked-button (click)="saveAttempt()" [disabled]="isLockedForInputs()">Guardar intento</button>
         </div>
         <div class="row">
-          <button mat-raised-button color="accent" (click)="finish()" [disabled]="isLocked()">Finalizar</button>
-          <button mat-stroked-button color="warn" (click)="markDNF()" [disabled]="isLocked()">DNF</button>
-
+          <button mat-raised-button color="accent" (click)="finish()" [disabled]="!canFinish()">Finalizar</button>
+          <button mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">DNF</button>
         </div>
       </div>
       <div *ngIf="maxLoad() != null" class="row">Máximo actual: {{ maxLoad() }} kg</div>
-
     </div>
   </mat-card>
   `,
@@ -140,17 +150,17 @@ import { Subscription } from 'rxjs';
     .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   `]
 })
-export class JudgePanelComponent {
+export class JudgePanelComponent implements OnDestroy {
   private fb = inject(FormBuilder);
   private wodsSvc = inject(WodService);
   private scoreSvc = inject(ScoreService);
   private teamSvc = inject(TeamService);
 
   private scoreSub?: Subscription;
+
   // WODs y Teams (signals)
   wods = signal<Wod[]>([]);
   teams = signal<Team[]>([]);
-
   selectedWod: Wod | null = null;
 
   // Estado de UI local
@@ -160,7 +170,12 @@ export class JudgePanelComponent {
   maxLoad = signal<number | null>(null);
   startedAt = signal<number | null>(null);
   finalTimeMs = signal<number | null>(null);
-  ticker?: any;
+  status = signal<ScoreStatus>('not_started');
+
+  // ticker reactivo + protección contra snapshots "viejos"
+  tick = signal(0);
+  private ticker?: any;
+  private pausedOverride = false; // 👈 evita que un snapshot con running re-arranque tras STOP
 
   // score actual
   scoreId = signal<string | null>(null);
@@ -177,26 +192,17 @@ export class JudgePanelComponent {
   });
 
   constructor() {
-    // Cargar WODs al iniciar
     this.wodsSvc.listAll$().subscribe(ws => this.wods.set(ws));
-
-    // Cargar equipos por categoría reactivo
     this.form.get('category')!.valueChanges.subscribe((cat) => {
       this.onCategoryChange((cat || 'RX') as Category);
     });
-    // primera carga
     this.onCategoryChange(this.form.value.category || 'RX');
   }
 
   // ======= Equipos =======
   onCategoryChange(cat: Category) {
-    this.loadTeamsByCategory(cat);
-    // limpiar selección de equipo al cambiar categoría
+    this.teamSvc.listByCategory$(cat).subscribe(ts => this.teams.set(ts));
     this.form.patchValue({ teamId: '', teamName: '' });
-  }
-
-  private loadTeamsByCategory(category: Category) {
-    this.teamSvc.listByCategory$(category).subscribe(ts => this.teams.set(ts));
   }
 
   onSelectTeam(teamId: string) {
@@ -220,19 +226,32 @@ export class JudgePanelComponent {
     if (!wod) return null;
     const capBlock = wod.blocks.find(b => (b as any).capSeconds != null) as any;
     if (capBlock?.capSeconds != null) return Number(capBlock.capSeconds);
-
     const amrap = wod.blocks.find(b => b.type === 'amrap') as any;
     if (amrap?.minutes) return Number(amrap.minutes) * 60;
-
-    const emom = wod.blocks.find(b => b.type === 'emom') as any;
-    if (emom?.minutes) return Number(emom.minutes) * 60;
-
+    const emom  = wod.blocks.find(b => b.type === 'emom') as any;
+    if (emom?.minutes)  return Number(emom.minutes) * 60;
     return null;
   }
 
-  // ======= UI tiempo =======
+  // ======= Timer helpers =======
+  private startTicker() {
+    clearInterval(this.ticker);
+    this.ticker = setInterval(() => {
+      this.tick.update(v => v + 1);
+
+      // auto-cap
+      const cap = (this.form.value.capSeconds ?? null);
+      if (!this.pausedOverride && this.status() === 'running' && this.startedAt() && cap && cap > 0) {
+        const elapsed = Date.now() - (this.startedAt() as number);
+        if (elapsed >= cap * 1000) this.finish().catch(() => {});
+      }
+    }, 100);
+  }
+  private stopTicker() { clearInterval(this.ticker); }
+
   displayTime() {
-    if (this.startedAt() && !this.finalTimeMs()) {
+    this.tick(); // fuerza recomputo periódicamente
+    if (this.status() === 'running' && this.startedAt() && !this.pausedOverride) {
       const elapsed = Date.now() - (this.startedAt() as number);
       return this.msToClock(elapsed);
     }
@@ -264,95 +283,117 @@ export class JudgePanelComponent {
     });
     this.scoreId.set(id);
     this.scoreReady.set(true);
-
-    // Reset local (si luego te suscribes al score doc, esto se puede quitar)
-    this.reps.set(0);
-    this.noReps.set(0);
     this.currentLoad = 0;
-    this.maxLoad.set(null);
-    this.startedAt.set(null);
-    this.finalTimeMs.set(null);
-
     this.bindScore(id);
   }
 
   async incRep() {
     if (!this.scoreId()) { await this.prepareScore(); }
     await this.scoreSvc.incrementReps(this.scoreId()!);
-    this.reps.update(v => v + 1);
   }
-
   async incNoRep() {
     if (!this.scoreId()) { await this.prepareScore(); }
     await this.scoreSvc.incrementNoReps(this.scoreId()!);
-    this.noReps.update(v => v + 1);
   }
-
   async saveAttempt() {
     if (!this.scoreId()) { await this.prepareScore(); }
     const load = Number(this.currentLoad) || 0;
     await this.scoreSvc.addLoadAttempt(this.scoreId()!, load);
-    this.maxLoad.set(Math.max(this.maxLoad() ?? 0, load));
   }
 
   async startTimer() {
     if (!this.scoreId()) { await this.prepareScore(); }
+
+    // reanudar desde pausa (usa el tiempo congelado)
+    if (this.status() === 'paused' && this.finalTimeMs()) {
+      const resumeStart = Date.now() - (this.finalTimeMs() as number);
+      this.startedAt.set(resumeStart);
+      this.finalTimeMs.set(null);
+    }
+
+    this.pausedOverride = false;
+    this.status.set('running');
+    if (!this.startedAt()) this.startedAt.set(Date.now()); // optimista
+    this.startTicker();
+
     await this.scoreSvc.start(this.scoreId()!);
-    this.startedAt.set(Date.now());
-    this.finalTimeMs.set(null);
-    clearInterval(this.ticker);
-    this.ticker = setInterval(() => {/* refresco visual */}, 100);
   }
 
   async stopTimer() {
     if (!this.scoreId()) return;
-    await this.scoreSvc.stop(this.scoreId()!);
+    if (this.status() !== 'running') return;
+
+    // PAUSA INMEDIATA (UI)
     if (this.startedAt()) {
       const elapsed = Date.now() - (this.startedAt() as number);
       this.finalTimeMs.set(elapsed);
     }
-    clearInterval(this.ticker);
+    this.status.set('paused');
+    this.pausedOverride = true;  // 👈 evita que un snapshot viejo con 'running' re-arranque
+    this.stopTicker();
+
+    // Persiste la pausa (ideal: que el servicio guarde status='paused' y/o finalTimeMs)
+    await this.scoreSvc.stop(this.scoreId()!);
   }
 
   async finish() {
     if (!this.scoreId()) return;
-    await this.scoreSvc.finish(this.scoreId()!);
-    clearInterval(this.ticker);
-    alert('Finalizado');
+
+    // si iba corriendo y no había final, calcúlalo
+    if (this.status() === 'running' && this.startedAt() && !this.finalTimeMs()) {
+      const elapsed = Date.now() - (this.startedAt() as number);
+      await this.scoreSvc.finish(this.scoreId()!, elapsed);
+    } else {
+      await this.scoreSvc.finish(this.scoreId()!);
+    }
+
+    this.pausedOverride = false;
+    this.stopTicker();
   }
 
   async markDNF() {
     if (!this.scoreId()) return;
     await this.scoreSvc.markDNF(this.scoreId()!);
-    clearInterval(this.ticker);
-    alert('DNF marcado');
+    this.pausedOverride = false;
+    this.stopTicker();
   }
 
   private bindScore(id: string) {
-    // limpia suscripción previa
     this.scoreSub?.unsubscribe();
     this.scoreSub = this.scoreSvc.watch$(id).subscribe(s => {
       if (!s) return;
 
-      // reflejar contadores/tiempo/carga desde BD
+      // contadores/carga
       this.reps.set(s.reps || 0);
       this.noReps.set(s.noReps || 0);
       this.maxLoad.set(s.maxLoadKg ?? null);
 
-      // tiempo: si está corriendo, mostramos tiempo en vivo
-      if (s.status === 'running' && s.startedAt) {
-        this.startedAt.set(s.startedAt);
-        this.finalTimeMs.set(null);
-        clearInterval(this.ticker);
-        this.ticker = setInterval(() => {/* paint */}, 100);
+      const nextStatus = (s.status as ScoreStatus) || 'not_started';
+
+      // si el usuario pulsó STOP (pausedOverride=true), ignoramos temporalmente snapshots 'running'
+      if (this.pausedOverride && nextStatus === 'running') {
+        // no re-arrancamos ticker hasta que llegue un estado != running
+        // mantenemos pantalla congelada
       } else {
-        // si finished trae finalTimeMs, o DNF/not_started
-        this.startedAt.set(s.startedAt ?? null);
-        this.finalTimeMs.set(s.finalTimeMs ?? null);
-        clearInterval(this.ticker);
+        this.status.set(nextStatus);
+
+        if (nextStatus === 'running' && s.startedAt) {
+          this.startedAt.set(s.startedAt);
+          this.finalTimeMs.set(null);
+          this.startTicker();
+        } else {
+          this.startedAt.set(s.startedAt ?? null);
+          this.finalTimeMs.set(s.finalTimeMs ?? (nextStatus === 'paused' && this.finalTimeMs() ? this.finalTimeMs() : null));
+          this.stopTicker();
+        }
+
+        // si dejamos de ver running desde BD, liberamos el override
+        if (this.pausedOverride && nextStatus !== 'running') {
+          this.pausedOverride = false;
+        }
       }
 
-      // también reflejar scoring/cap si otro juez los cambió
+      // reflejar cambios remotos de cap/scoring
       if (s.capSeconds != null && s.capSeconds !== this.form.value.capSeconds) {
         this.form.patchValue({ capSeconds: s.capSeconds }, { emitEvent: false });
       }
@@ -362,24 +403,28 @@ export class JudgePanelComponent {
     });
   }
 
-  isLocked(): boolean {
-    // no permitir cambios si el score no está preparado o si terminó/DNF
-    const locked = !this.scoreReady() || !this.scoreId();
-    return locked;
+  // ======= Habilitaciones UI =======
+  isLockedForInputs(): boolean {
+    return !this.scoreReady() || !this.scoreId() || this.status() === 'finished' || this.status() === 'dnf';
   }
-
-  isFinishedOrDNF(): boolean {
-    // si tenemos los datos live, inferimos del UI
-    // como simplificación, bloqueamos acciones cuando finalizamos/parado sin startedAt y con finalTime
-    // pero mejor leer del doc live: usa scoreSub → podrías guardar s.status en una signal si prefieres
-    // aquí reutilizamos finalTimeMs como proxy (si existe y no está running)
-    return !!(this.finalTimeMs());
+  canStart(): boolean {
+    return this.scoreReady() && !!this.scoreId()
+      && this.status() !== 'running'
+      && this.status() !== 'finished'
+      && this.status() !== 'dnf';
+  }
+  canStop(): boolean {
+    return this.scoreReady() && !!this.scoreId() && this.status() === 'running';
+  }
+  canFinish(): boolean {
+    return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused');
+  }
+  canDNF(): boolean {
+    return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused');
   }
 
   ngOnDestroy() {
     this.scoreSub?.unsubscribe();
-    clearInterval(this.ticker);
+    this.stopTicker();
   }
-
-
 }
