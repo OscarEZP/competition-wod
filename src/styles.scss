@@ -1,39 +1,118 @@
-
-// Include theming for Angular Material with `mat.theme()`.
-// This Sass mixin will define CSS variables that are used for styling Angular Material
-// components according to the Material 3 design spec.
-// Learn more about theming and how to use it for your application's
-// custom components at https://material.angular.dev/guide/theming
+/* src/styles.scss */
+@use 'sass:map';
 @use '@angular/material' as mat;
 
-html {
-  @include mat.theme((
-    color: (
-      primary: mat.$cyan-palette,
-      tertiary: mat.$orange-palette,
-    ),
-    typography: Roboto,
-    density: 0,
-  ));
+@include mat.core();
+
+/* --- M2 compat (Angular Material 18+) --- */
+$brand-base: map.merge(mat.$m2-orange-palette, (500: #FC5500));
+$brand-primary: mat.m2-define-palette($brand-base, 500, 300, 700);
+$brand-accent: mat.m2-define-palette(mat.$m2-grey-palette, 600, 500, 700);
+$brand-warn: mat.m2-define-palette(mat.$m2-red-palette);
+
+$brand-typography: mat.m2-define-typography-config();
+
+$brand-theme: mat.m2-define-light-theme((
+  color: (
+    primary: $brand-primary,
+    accent: $brand-accent,
+    warn: $brand-warn,
+  ),
+  typography: $brand-typography,
+  density: 0
+));
+
+@include mat.all-component-themes($brand-theme);
+
+/* --- Colores y fondo --- */
+:root {
+  --brand-primary: #FC5500;
+  --brand-bg: #ffffff;
+  --brand-surface: #ffffff;
+  --brand-border: #eaeaea;
+  --brand-text: #1d1d1f;
+  --brand-muted: #6b7280;
 }
 
-body {
-  // Default the application to a light color theme. This can be changed to
-  // `dark` to enable the dark color theme, or to `light dark` to defer to the
-  // user's system settings.
-  color-scheme: light;
-
-  // Set a default background, font and text colors for the application using
-  // Angular Material's system-level CSS variables. Learn more about these
-  // variables at https://material.angular.dev/guide/system-variables
-  background-color: var(--mat-sys-surface);
-  color: var(--mat-sys-on-surface);
-  font: var(--mat-sys-body-medium);
-
-  // Reset the user agent margin.
+/* --- Reset general --- */
+html, body {
+  height: 100%;
   margin: 0;
+  background: var(--brand-bg);
+  color: var(--brand-text);
+  font-family: Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
-/* You can add global styles to this file, and also import other style files */
 
-html, body { height: 100%; }
-body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+/* --- Layout auth (mobile-first) --- */
+.container-auth {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 24px;
+  background-color: var(--brand-bg);
+}
+
+.card-auth {
+  width: 100%;
+  max-width: 420px;
+  background: var(--brand-surface);
+  border-radius: 16px;
+  border: 1px solid var(--brand-border);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
+  padding: 24px 20px;
+}
+
+/* --- Branding --- */
+.brand-badge {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: var(--brand-primary);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: .5px;
+  margin-bottom: 12px;
+}
+
+/* --- Enlaces y texto --- */
+a.link {
+  color: var(--brand-primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+a.link:hover {
+  text-decoration: underline;
+}
+
+.mat-mdc-form-field-subscript-wrapper {
+  margin-top: 2px;
+}
+
+/* --- Botones --- */
+.mat-mdc-raised-button.mat-primary {
+  border-radius: 12px;
+  text-transform: none;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(252, 85, 0, 0.3);
+}
+
+/* --- Formularios --- */
+mat-form-field {
+  width: 100%;
+}
+
+/* --- Tipografía de títulos --- */
+h1, h2, h3 {
+  font-weight: 700;
+  color: var(--brand-text);
+}
+
+p {
+  color: var(--brand-muted);
+}
