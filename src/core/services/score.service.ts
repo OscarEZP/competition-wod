@@ -1,20 +1,25 @@
+// src/core/services/score.service.ts
 import { Injectable, inject } from '@angular/core';
 import {
-  Firestore, collection, addDoc, collectionData, doc,
-  updateDoc, deleteDoc, docData, query, where, orderBy, setDoc
+  Firestore
 } from '@angular/fire/firestore';
-import { runTransaction, increment, serverTimestamp, Timestamp } from 'firebase/firestore';
+import {
+  // Usa SIEMPRE el SDK modular para refs + trx
+  collection, doc, query, where, orderBy, setDoc, updateDoc,
+  getDoc, runTransaction, increment, serverTimestamp, DocumentReference
+} from 'firebase/firestore';
+import { collectionData, docData } from '@angular/fire/firestore';
 import { Observable, map } from 'rxjs';
 import { Score } from '../models/score';
 import { AuthService } from './auth.service';
 
-const BIG = 100000; // penalizador para DNF/ties en 'time'
+const BIG = 1_000_000_000; // penalizador muy grande para DNF/ties en 'time'
 
 @Injectable({ providedIn: 'root' })
 export class ScoreService {
   private db = inject(Firestore);
   private auth = inject(AuthService);
-  private col = collection(this.db, 'scores');
+  private col = collection(this.db as any, 'scores');
 
   // ======= Lectura =======
   listForWod$(wodId: string): Observable<Score[]> {
@@ -28,7 +33,7 @@ export class ScoreService {
   }
 
   get$(id: string): Observable<Score | null> {
-    const ref = doc(this.db, 'scores', id);
+    const ref = doc(this.db as any, 'scores', id);
     return docData(ref, { idField: 'id' }).pipe(map(d => (d ? d as Score : null)));
   }
 
@@ -37,14 +42,15 @@ export class ScoreService {
     return `${wodId}__${teamId}__${category}`;
   }
 
+  private epochNow() { return Date.now(); }
+
   private stripUndefined(obj: any) {
-    if (obj && typeof obj === 'object') {
-      Object.keys(obj).forEach(k => {
-        const v = obj[k];
-        if (v === undefined) delete obj[k];
-        else if (Array.isArray(v)) v.forEach(x => this.stripUndefined(x));
-        else if (typeof v === 'object') this.stripUndefined(v);
-      });
+    if (!obj || typeof obj !== 'object') return;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (v === undefined) delete obj[k];
+      else if (Array.isArray(v)) v.forEach(x => this.stripUndefined(x));
+      else if (typeof v === 'object') this.stripUndefined(v);
     }
   }
 
@@ -53,35 +59,35 @@ export class ScoreService {
    * - time: menor tiempo gana; si no terminó/ DNF -> capMs + (BIG - reps)
    * - reps: mayor reps gana => rankPrimary = -reps
    * - load: mayor carga gana; empate por reps => rankPrimary = -(maxLoadKg*1000 + reps)
+   * - Desempate global: rankSecondary = -updatedAtEpoch (más reciente gana el desempate)
    */
   computeRanks(opts: {
     scoringMode: 'time'|'reps'|'load',
     finalTimeMs?: number | null,
     capSeconds?: number | null,
     finished?: boolean,
-    dnf?: boolean,
     reps: number,
     maxLoadKg?: number | null,
-  }): { rankPrimary: number, rankSecondary: number } {
+  }, updatedAtEpoch: number): { rankPrimary: number, rankSecondary: number } {
     const { scoringMode, finalTimeMs, capSeconds, finished, reps, maxLoadKg } = opts;
 
     if (scoringMode === 'time') {
       const capMs = (capSeconds ?? 0) * 1000;
       if (finished && finalTimeMs != null) {
-        return { rankPrimary: finalTimeMs, rankSecondary: 0 };
+        return { rankPrimary: finalTimeMs, rankSecondary: -updatedAtEpoch };
       }
-      // Mientras corre o DNF: ordena por reps (más reps => mejor)
+      // Mientras corre o DNF/paused: ordena por reps (más reps => mejor), siempre detrás del cap
       const penalty = BIG - (reps || 0);
-      return { rankPrimary: capMs + penalty, rankSecondary: 0 };
+      return { rankPrimary: capMs + penalty, rankSecondary: -updatedAtEpoch };
     }
 
     if (scoringMode === 'reps') {
-      return { rankPrimary: -(reps || 0), rankSecondary: 0 };
+      return { rankPrimary: -(reps || 0), rankSecondary: -updatedAtEpoch };
     }
 
     // load
     const loadVal = Math.round(((maxLoadKg ?? 0) * 1000) + Math.max(0, reps || 0));
-    return { rankPrimary: -loadVal, rankSecondary: 0 };
+    return { rankPrimary: -loadVal, rankSecondary: -updatedAtEpoch };
   }
 
   // ======= Upsert inicial =======
@@ -93,8 +99,9 @@ export class ScoreService {
     capSeconds?: number | null;
   }): Promise<string> {
     const id = this.scoreId(args.wodId, args.teamId, args.category);
-    const ref = doc(this.db, 'scores', id);
+    const ref = doc(this.db as any, 'scores', id) as DocumentReference;
     const user = this.auth.currentUser;
+    const now = this.epochNow();
 
     const base = {
       id,
@@ -109,20 +116,24 @@ export class ScoreService {
       noReps: 0,
       maxLoadKg: null,
       attempts: [],
-      startedAt: null,
-      finalTimeMs: null,
+      startedAt: null as number | null, // mantenemos epoch para UI actual
+      finalTimeMs: null as number | null,
       capSeconds: args.capSeconds ?? null,
-      rankPrimary: this.computeRanks({
-        scoringMode: args.scoringMode,
-        finalTimeMs: null,
-        capSeconds: args.capSeconds ?? null,
-        finished: false,
-        reps: 0,
-        maxLoadKg: null,
-      }).rankPrimary,
-      rankSecondary: 0,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      // ranking inicial
+      ...(() => {
+        const ranks = this.computeRanks({
+          scoringMode: args.scoringMode,
+          finalTimeMs: null,
+          capSeconds: args.capSeconds ?? null,
+          finished: false,
+          reps: 0,
+          maxLoadKg: null,
+        }, now);
+        return { rankPrimary: ranks.rankPrimary, rankSecondary: ranks.rankSecondary };
+      })(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedAtEpoch: now,  // para desempates deterministas
       judgeId: user?.uid || null,
     };
 
@@ -133,55 +144,119 @@ export class ScoreService {
 
   // ======= Acciones en tiempo real =======
 
-  /** Incrementa reps en transacción y recalcula ranking inmediatamente */
+  /** Incrementa reps en transacción y recalcula ranking inmediatamente (a prueba de concurrencia) */
   async incrementReps(scoreId: string, by: number = 1) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+
     await runTransaction(this.db as any, async (trx) => {
-      const ref = doc(this.db, 'scores', scoreId);
-      const snap = await trx.get(ref as any);
+      const snap = await trx.get(ref);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
-      const reps = (data.reps || 0) + by;
+      console.log('Current data:', data); // Debug actual state
+      console.log('Current reps:', data.reps); // Debug reps actuales
+      
+      // Asegurar que data.reps sea un número
+      const currentReps = typeof data.reps === 'number' ? data.reps : 0;
+      const reps = Math.max(0, currentReps + by);
+      
+      console.log('Calculated new reps:', reps); // Debug nuevo valor
+
+      // No permitir mutaciones tras finish/dnf
+      if (data.status === 'finished' || data.status === 'dnf') {
+        console.log('Score is finished or DNF, skipping increment');
+        return;
+      }
+
       const ranks = this.computeRanks({
         scoringMode: data.scoringMode,
         finalTimeMs: data.finalTimeMs ?? null,
         capSeconds: data.capSeconds ?? null,
-        finished: data.status === 'finished',
         reps,
         maxLoadKg: data.maxLoadKg ?? null,
-      });
+      }, now);
 
-      trx.update(ref as any, {
+      const update = {
         reps,
         rankPrimary: ranks.rankPrimary,
         rankSecondary: ranks.rankSecondary,
-        updatedAt: Date.now(),
-      } as any);
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
+      };
+
+      console.log('Updating with:', update); // Debug update object
+      
+      try {
+        await trx.update(ref, update);
+        console.log('Update successful');
+      } catch (error) {
+        console.error('Update failed:', error);
+        throw error;
+      }
     });
-  }
+}
 
-  /** Incrementa no-reps (no afecta el ranking directamente) */
+  /** Incrementa no-reps en transacción y recalcula ranking si aplica (no afecta ranking en 'reps'/'load' por diseño) */
   async incrementNoReps(scoreId: string, by: number = 1) {
-    const ref = doc(this.db, 'scores', scoreId);
-    await updateDoc(ref, {
-      noReps: increment(by),
-      updatedAt: Date.now()
-    } as any);
-  }
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
 
-  /** Guarda intento de carga y recomputa ranking */
-  async addLoadAttempt(scoreId: string, loadKg: number) {
     await runTransaction(this.db as any, async (trx) => {
-      const ref = doc(this.db, 'scores', scoreId);
-      const snap = await trx.get(ref as any);
+      const snap = await trx.get(ref);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
+      // No permitir mutaciones tras finish/dnf
+      if (data.status === 'finished' || data.status === 'dnf') return;
+
+      const noReps = Math.max(0, (data.noReps || 0) + by);
+
+      // En 'time', el ranking usa reps para ordenar DNFs. Aquí NO cambiamos reps.
+      const ranks = this.computeRanks({
+        scoringMode: data.scoringMode,
+        finalTimeMs: data.finalTimeMs ?? null,
+        capSeconds: data.capSeconds ?? null,
+        reps: data.reps || 0,
+        maxLoadKg: data.maxLoadKg ?? null,
+      }, now);
+
+      const update = {
+        noReps,
+        rankPrimary: ranks.rankPrimary,
+        rankSecondary: ranks.rankSecondary,
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
+      };
+
+      console.log('Updating with:', update); // Debug update object
+      
+      try {
+        await trx.update(ref, update);
+        console.log('Update successful');
+      } catch (error) {
+        console.error('Update failed:', error);
+        throw error;
+      }
+    });
+  }
+
+  /** Guarda intento de carga y recomputa ranking */
+  async addLoadAttempt(scoreId: string, loadKg: number, success = true) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+    await runTransaction(this.db as any, async (trx) => {
+      const snap = await trx.get(ref);
+      if (!snap.exists()) throw new Error('Score no encontrado');
+      const data = snap.data() as Score;
+
+      if ( data.status === 'dnf') return;
+
       const attempts = Array.isArray(data.attempts) ? [...data.attempts] : [];
-      attempts.push({ at: Date.now(), loadKg, success: true });
+      attempts.push({ at: now, loadKg, success });
 
-      const maxLoad = Math.max(loadKg, data.maxLoadKg ?? 0);
-
+      const maxLoad = success ? Math.max(loadKg, data.maxLoadKg ?? 0) : (data.maxLoadKg ?? null);
+      
       const ranks = this.computeRanks({
         scoringMode: data.scoringMode,
         finalTimeMs: data.finalTimeMs ?? null,
@@ -189,81 +264,127 @@ export class ScoreService {
         finished: data.status === 'finished',
         reps: data.reps || 0,
         maxLoadKg: maxLoad,
-      });
+      }, now);
 
-      trx.update(ref as any, {
+      const update = {
         attempts,
         maxLoadKg: maxLoad,
         rankPrimary: ranks.rankPrimary,
         rankSecondary: ranks.rankSecondary,
-        updatedAt: Date.now(),
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
+      };
+
+      console.log('Updating with:', update); // Debug update object
+      
+      try {
+        await trx.update(ref, update);
+        console.log('Update successful');
+      } catch (error) {
+        console.error('Update failed:', error);
+        throw error;
+      }
+    });
+  }
+
+  /** Marca inicio o reanudación del timer */
+  async start(scoreId: string) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+
+    await runTransaction(this.db as any, async (trx) => {
+      const snap = await trx.get(ref);
+      if (!snap.exists()) throw new Error('Score no encontrado');
+      const data = snap.data() as Score;
+
+      if (data.status === 'finished' || data.status === 'dnf') return;
+
+      // Si estaba paused y teníamos un finalTimeMs (tiempo acumulado), lo usamos para reanudar
+      let startedAt = data.startedAt ?? now;
+      if ((data.finalTimeMs ?? null) != null) {
+        // reanudar donde lo dejamos
+        startedAt = now - (data.finalTimeMs as number);
+      }
+
+      const ranks = this.computeRanks({
+        scoringMode: data.scoringMode,
+        finalTimeMs: null,
+        capSeconds: data.capSeconds ?? null,
+        finished: false,
+        reps: data.reps || 0,
+        maxLoadKg: data.maxLoadKg ?? null,
+      }, now);
+
+      trx.update(ref, {
+        status: 'running',
+        startedAt,
+        finalTimeMs: null,
+        rankPrimary: ranks.rankPrimary,
+        rankSecondary: ranks.rankSecondary,
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
       } as any);
     });
   }
 
-  /** Marca inicio del timer */
-  async start(scoreId: string) {
-    const ref = doc(this.db, 'scores', scoreId);
-    await updateDoc(ref, {
-      status: 'running',
-      startedAt: Date.now(),
-      finalTimeMs: null,
-      updatedAt: Date.now(),
-    } as any);
-  }
-
-  /** Marca stop (guarda finalTimeMs) — no finaliza todavía */
+  /** Pausa (guarda status='paused' y congela finalTimeMs) */
   async stop(scoreId: string) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+
     await runTransaction(this.db as any, async (trx) => {
-      const ref = doc(this.db, 'scores', scoreId);
-      const snap = await trx.get(ref as any);
+      const snap = await trx.get(ref);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
-      if (!data.startedAt) return; // nada que medir
-      const finalTimeMs = Date.now() - data.startedAt;
+      if (data.status === 'finished' || data.status === 'dnf') return;
+
+      let finalTimeMs = data.finalTimeMs ?? null;
+      if (data.startedAt) {
+        finalTimeMs = now - data.startedAt;
+      }
 
       const ranks = this.computeRanks({
         scoringMode: data.scoringMode,
         finalTimeMs,
         capSeconds: data.capSeconds ?? null,
-        finished: false, // aún no finalizado
+        finished: false, // pausa no es finish
         reps: data.reps || 0,
         maxLoadKg: data.maxLoadKg ?? null,
-      });
+      }, now);
 
-      trx.update(ref as any, {
+      trx.update(ref, {
+        status: 'paused',
         finalTimeMs,
         rankPrimary: ranks.rankPrimary,
         rankSecondary: ranks.rankSecondary,
-        updatedAt: Date.now(),
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
       } as any);
     });
   }
 
   /** Finaliza (bloquea el tiempo si aplica y recalcula ranking como 'finished') */
-  // En ScoreService
   async finish(scoreId: string, elapsedMs?: number | null) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+
     await runTransaction(this.db as any, async (trx) => {
-      const ref = doc(this.db, 'scores', scoreId);
-      const snap = await trx.get(ref as any);
+      const snap = await trx.get(ref);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
-      // finalTimeMs puede venir por parámetro (prioridad), o desde BD, o calcularse con startedAt
+      if (data.status === 'finished') return; // idempotente
+
       let finalTimeMs = data.finalTimeMs ?? null;
 
       if (data.scoringMode === 'time') {
         if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
-          // 1) usar el valor que llega desde UI (más preciso si pausaste/reanudaste)
           finalTimeMs = elapsedMs;
         } else if (data.startedAt && finalTimeMs == null) {
-          // 2) fallback: calcular desde startedAt si no teníamos final
-          finalTimeMs = Date.now() - data.startedAt;
+          finalTimeMs = now - data.startedAt;
         }
-        // 3) si ya había final en BD, lo respetamos (no lo tocamos)
       } else {
-        // Para 'reps' y 'load' no hay tiempo final necesario (se mantiene null).
         finalTimeMs = null;
       }
 
@@ -274,26 +395,30 @@ export class ScoreService {
         finished: true,
         reps: data.reps || 0,
         maxLoadKg: data.maxLoadKg ?? null,
-      });
+      }, now);
 
-      trx.update(ref as any, {
+      trx.update(ref, {
         status: 'finished',
         finalTimeMs,
         rankPrimary: ranks.rankPrimary,
         rankSecondary: ranks.rankSecondary,
-        updatedAt: Date.now(),
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
       } as any);
     });
   }
 
-
   /** Marca DNF y recalcula ranking (usa reps para ordenar DNFs en 'time') */
   async markDNF(scoreId: string) {
+    const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
+    const now = this.epochNow();
+
     await runTransaction(this.db as any, async (trx) => {
-      const ref = doc(this.db, 'scores', scoreId);
-      const snap = await trx.get(ref as any);
+      const snap = await trx.get(ref);
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
+
+      if (data.status === 'finished' || data.status === 'dnf') return;
 
       const ranks = this.computeRanks({
         scoringMode: data.scoringMode,
@@ -302,20 +427,21 @@ export class ScoreService {
         finished: false,
         reps: data.reps || 0,
         maxLoadKg: data.maxLoadKg ?? null,
-      });
+      }, now);
 
-      trx.update(ref as any, {
+      trx.update(ref, {
         status: 'dnf',
         finalTimeMs: null,
         rankPrimary: ranks.rankPrimary,
         rankSecondary: ranks.rankSecondary,
-        updatedAt: Date.now(),
+        updatedAt: serverTimestamp(),
+        updatedAtEpoch: now,
       } as any);
     });
   }
 
   watch$(id: string): Observable<Score | null> {
-    const ref = doc(this.db, 'scores', id);
+    const ref = doc(this.db as any, 'scores', id);
     return docData(ref, { idField: 'id' }).pipe(map(d => (d ? d as Score : null)));
   }
 }
