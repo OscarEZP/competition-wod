@@ -4,13 +4,13 @@ import { authGuard } from '../core/guards/auth.guard';
 import { roleGuard } from '../core/guards/role.guard';
 
 export const routes: Routes = [
-  { path: '', component: HomeComponent },
+  { path: '', component: HomeComponent, canActivate: [authGuard] },
 
   // Ruta protegida (ejemplo) visible a cualquier usuario logueado:
   {
     path: 'dashboard',
     canActivate: [authGuard],
-    loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent),
+    loadComponent: () => import('./home/home.component').then(m => m.HomeComponent),
   },
 
   // Ruta solo admins (ejemplo):

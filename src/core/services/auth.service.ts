@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Auth, authState, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signOut, User } from '@angular/fire/auth';
 import { Firestore, doc, getDoc, setDoc } from '@angular/fire/firestore';
 import { docData } from '@angular/fire/firestore';
-import { map, switchMap, of, shareReplay } from 'rxjs';
+import { map, switchMap, of, shareReplay, catchError } from 'rxjs';
 import { AppUser } from '../models/app-user';
 import { Role } from '../models/role';
 
@@ -10,6 +10,10 @@ import { Role } from '../models/role';
 export class AuthService {
   private auth = inject(Auth);
   private db = inject(Firestore);
+
+  user$ = authState(this.auth).pipe(shareReplay(1));
+
+  get currentUser() { return this.auth.currentUser; }
 
   /** Firebase user (crudo) */
   firebaseUser$ = authState(this.auth);
@@ -25,11 +29,6 @@ export class AuthService {
     }),
     shareReplay(1)
   );
-
-  /** Helpers síncronos (si necesitas en guards) */
-  get currentUser(): User | null {
-    return this.auth.currentUser;
-  }
 
   async register(email: string, password: string, displayName?: string, role: Role = 'user'): Promise<void> {
     const cred = await createUserWithEmailAndPassword(this.auth, email, password);

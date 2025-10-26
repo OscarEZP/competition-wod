@@ -421,6 +421,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
 
   private scoreSub?: Subscription;
   private destroy$ = new Subject<void>();
+  
 
   wods = signal<Wod[]>([]);
   teams = signal<Team[]>([]);

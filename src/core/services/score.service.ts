@@ -288,7 +288,7 @@ export class ScoreService {
   }
 
   /** Marca inicio o reanudación del timer */
-  async start(scoreId: string) {
+  async start(scoreId: string, forcedStartedAtMs?: number) {
     const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
     const now = this.epochNow();
 
@@ -297,30 +297,13 @@ export class ScoreService {
       if (!snap.exists()) throw new Error('Score no encontrado');
       const data = snap.data() as Score;
 
-      if (data.status === 'finished' || data.status === 'dnf') return;
+      if (data.status === 'running' || data.status === 'finished') return;
 
-      // Si estaba paused y teníamos un finalTimeMs (tiempo acumulado), lo usamos para reanudar
-      let startedAt = data.startedAt ?? now;
-      if ((data.finalTimeMs ?? null) != null) {
-        // reanudar donde lo dejamos
-        startedAt = now - (data.finalTimeMs as number);
-      }
-
-      const ranks = this.computeRanks({
-        scoringMode: data.scoringMode,
-        finalTimeMs: null,
-        capSeconds: data.capSeconds ?? null,
-        finished: false,
-        reps: data.reps || 0,
-        maxLoadKg: data.maxLoadKg ?? null,
-      }, now);
+      const startedAt = (typeof forcedStartedAtMs === 'number') ? forcedStartedAtMs : now;
 
       trx.update(ref, {
         status: 'running',
         startedAt,
-        finalTimeMs: null,
-        rankPrimary: ranks.rankPrimary,
-        rankSecondary: ranks.rankSecondary,
         updatedAt: serverTimestamp(),
         updatedAtEpoch: now,
       } as any);
@@ -407,6 +390,7 @@ export class ScoreService {
       } as any);
     });
   }
+  
 
   /** Marca DNF y recalcula ranking (usa reps para ordenar DNFs en 'time') */
   async markDNF(scoreId: string) {
