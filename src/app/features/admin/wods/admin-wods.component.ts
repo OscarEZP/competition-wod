@@ -209,12 +209,12 @@ import { WodService } from '../../../../core/services/wod.service';
                         </div>
                       </ng-container>
 
-                      <!-- FOR TIME -->
+                      <!-- FOR TIME (Cap en MINUTOS) -->
                       <ng-container *ngSwitchCase="'for_time'">
                         <div class="row-auto">
                           <mat-form-field appearance="outline" class="w">
-                            <mat-label>Cap (segundos)</mat-label>
-                            <input matInput type="number" formControlName="capSeconds" />
+                            <mat-label>Cap (minutos)</mat-label>
+                            <input matInput type="number" formControlName="capMinutes" />
                           </mat-form-field>
                         </div>
                         <div class="movements">
@@ -287,16 +287,16 @@ import { WodService } from '../../../../core/services/wod.service';
                         </div>
                       </ng-container>
 
-                      <!-- INTERVAL -->
+                      <!-- INTERVAL (Trabajo/Descanso en MINUTOS) -->
                       <ng-container *ngSwitchCase="'interval'">
                         <div class="row-3">
                           <mat-form-field class="w">
-                            <mat-label>Trabajo (s)</mat-label>
-                            <input matInput type="number" formControlName="workSeconds"/>
+                            <mat-label>Trabajo (min)</mat-label>
+                            <input matInput type="number" formControlName="workMinutes"/>
                           </mat-form-field>
                           <mat-form-field class="w">
-                            <mat-label>Descanso (s)</mat-label>
-                            <input matInput type="number" formControlName="restSeconds"/>
+                            <mat-label>Descanso (min)</mat-label>
+                            <input matInput type="number" formControlName="restMinutes"/>
                           </mat-form-field>
                           <mat-form-field class="w">
                             <mat-label>Rondas</mat-label>
@@ -356,12 +356,12 @@ import { WodService } from '../../../../core/services/wod.service';
                         </div>
                       </ng-container>
 
-                      <!-- CHIPPER -->
+                      <!-- CHIPPER (Cap en MINUTOS) -->
                       <ng-container *ngSwitchCase="'chipper'">
                         <div class="row-auto">
                           <mat-form-field appearance="outline" class="w">
-                            <mat-label>Cap (segundos)</mat-label>
-                            <input matInput type="number" formControlName="capSeconds" />
+                            <mat-label>Cap (minutos)</mat-label>
+                            <input matInput type="number" formControlName="capMinutes" />
                           </mat-form-field>
                         </div>
                         <div class="movements">
@@ -395,16 +395,16 @@ import { WodService } from '../../../../core/services/wod.service';
                         </div>
                       </ng-container>
 
-                      <!-- TABATA -->
+                      <!-- TABATA (Trabajo/Descanso en MINUTOS) -->
                       <ng-container *ngSwitchCase="'tabata'">
                         <div class="row-3">
                           <mat-form-field class="w">
-                            <mat-label>Trabajo (s)</mat-label>
-                            <input matInput type="number" formControlName="workSeconds"/>
+                            <mat-label>Trabajo (min)</mat-label>
+                            <input matInput type="number" formControlName="workMinutes"/>
                           </mat-form-field>
                           <mat-form-field class="w">
-                            <mat-label>Descanso (s)</mat-label>
-                            <input matInput type="number" formControlName="restSeconds"/>
+                            <mat-label>Descanso (min)</mat-label>
+                            <input matInput type="number" formControlName="restMinutes"/>
                           </mat-form-field>
                           <mat-form-field class="w">
                             <mat-label>Rondas</mat-label>
@@ -442,7 +442,7 @@ import { WodService } from '../../../../core/services/wod.service';
                         </div>
                       </ng-container>
 
-                      <!-- BENCHMARK -->
+                      <!-- BENCHMARK (Cap en MINUTOS) -->
                       <ng-container *ngSwitchCase="'benchmark'">
                         <div class="row-auto">
                           <mat-form-field class="w">
@@ -456,8 +456,8 @@ import { WodService } from '../../../../core/services/wod.service';
                         </mat-form-field>
                         <div class="row-auto">
                           <mat-form-field appearance="outline" class="w">
-                            <mat-label>Cap (segundos)</mat-label>
-                            <input matInput type="number" formControlName="capSeconds" />
+                            <mat-label>Cap (minutos)</mat-label>
+                            <input matInput type="number" formControlName="capMinutes" />
                           </mat-form-field>
                         </div>
                         <div class="movements">
@@ -735,7 +735,7 @@ export class AdminWodsComponent {
       case 'for_time':
         return this.fb.group({
           type: ['for_time'],
-          capSeconds: [600],
+          capMinutes: [10], // UI en minutos
           movements: this.fb.array([this.movementGroup()])
         });
       case 'emom':
@@ -747,8 +747,8 @@ export class AdminWodsComponent {
       case 'interval':
         return this.fb.group({
           type: ['interval'],
-          workSeconds: [40, Validators.required],
-          restSeconds: [20, Validators.required],
+          workMinutes: [1, Validators.required],   // UI en minutos
+          restMinutes: [1, Validators.required],   // UI en minutos
           rounds: [6, Validators.required],
           movements: this.fb.array([this.movementGroup()])
         });
@@ -763,14 +763,14 @@ export class AdminWodsComponent {
       case 'chipper':
         return this.fb.group({
           type: ['chipper'],
-          capSeconds: [900],
+          capMinutes: [15], // UI en minutos
           movements: this.fb.array([this.movementGroup()])
         });
       case 'tabata':
         return this.fb.group({
           type: ['tabata'],
-          workSeconds: [20, Validators.required],
-          restSeconds: [10, Validators.required],
+          workMinutes: [1, Validators.required],  // UI en minutos
+          restMinutes: [1, Validators.required],  // UI en minutos
           rounds: [8, Validators.required],
           movements: this.fb.array([this.movementGroup()])
         });
@@ -779,7 +779,7 @@ export class AdminWodsComponent {
           type: ['benchmark'],
           name: ['Fran', Validators.required],
           reference: [''],
-          capSeconds: [600],
+          capMinutes: [10], // UI en minutos
           movements: this.fb.array([this.movementGroup()])
         });
     }
@@ -823,13 +823,36 @@ export class AdminWodsComponent {
     this.perMinute(blockIndex).removeAt(j);
   }
 
+  private mapBlocksUiToDto(blocks: any[]): any[] {
+    return blocks.map((blk) => {
+      switch (blk.type) {
+        case 'for_time':
+        case 'chipper':
+        case 'benchmark':
+          return {
+            ...blk,
+            capSeconds: Math.round((blk.capMinutes ?? 0) * 60),
+          };
+        case 'interval':
+        case 'tabata':
+          return {
+            ...blk,
+            workSeconds: Math.round((blk.workMinutes ?? 0) * 60),
+            restSeconds: Math.round((blk.restMinutes ?? 0) * 60),
+          };
+        default:
+          return blk;
+      }
+    });
+  }
+
   async create() {
     if (this.form.invalid) return;
     this.loading = true;
     try {
       const raw = this.form.getRawValue();
 
-      // Validaciones mínimas según bloques
+      // Validaciones mínimas según bloques (en MINUTOS donde aplique)
       for (const blk of raw.blocks) {
         if (blk['type'] === 'amrap' && (!blk['minutes'] || blk['minutes'] <= 0)) {
           alert('AMRAP: minutos debe ser > 0');
@@ -839,11 +862,29 @@ export class AdminWodsComponent {
           alert('EMOM: minutos debe ser > 0');
           this.loading = false; return;
         }
-        if (blk['type'] === 'interval' && (!blk['workSeconds'] || !blk['restSeconds'] || !blk['rounds'])) {
+        if (blk['type'] === 'for_time' && (!blk['capMinutes'] || blk['capMinutes'] <= 0)) {
+          alert('FOR TIME: cap (min) debe ser > 0');
+          this.loading = false; return;
+        }
+        if (blk['type'] === 'chipper' && (!blk['capMinutes'] || blk['capMinutes'] <= 0)) {
+          alert('CHIPPER: cap (min) debe ser > 0');
+          this.loading = false; return;
+        }
+        if (blk['type'] === 'benchmark' && (!blk['capMinutes'] || blk['capMinutes'] <= 0)) {
+          alert('BENCHMARK: cap (min) debe ser > 0');
+          this.loading = false; return;
+        }
+        if (blk['type'] === 'interval' && (!blk['workMinutes'] || !blk['restMinutes'] || !blk['rounds'])) {
           alert('INTERVAL: trabajo/descanso/rondas inválidos');
           this.loading = false; return;
         }
+        if (blk['type'] === 'tabata' && (!blk['workMinutes'] || !blk['restMinutes'] || !blk['rounds'])) {
+          alert('TABATA: trabajo/descanso/rondas inválidos');
+          this.loading = false; return;
+        }
       }
+
+      const blocksDto = this.mapBlocksUiToDto(raw.blocks as any[]);
 
       await this.wodsSvc.create({
         name: raw.name!,
@@ -851,7 +892,7 @@ export class AdminWodsComponent {
         category: raw.category!,
         scoringMode: raw.scoringMode!,     // time | reps | load
         movementUnit: raw.movementUnit!,
-        blocks: raw.blocks as any,         // compatible con tu interfaz
+        blocks: blocksDto as any,          // convertido a segundos donde aplique
         createdAt: 0,                      // lo rellena el servicio
         createdBy: '',                     // lo rellena el servicio
       } as any);
@@ -886,7 +927,7 @@ export class AdminWodsComponent {
     this.editId = null;
   }
   async remove(w: Wod) {
-    if (!confirm(`Eliminar WOD "${w.name}"?`)) return;
+    if (!confirm(`Eliminar WOD "\${w.name}"?`)) return;
     await this.wodsSvc.remove(w.id);
   }
 

@@ -1,5 +1,5 @@
 // src/app/features/judge/judge-panel.component.ts
-import { Component, inject, signal, OnDestroy, TemplateRef, ViewChild, AfterViewInit } from '@angular/core';
+import { Component, inject, signal, OnDestroy, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
 
@@ -20,12 +20,37 @@ import { map, shareReplay, BehaviorSubject, Observable, Subject, Subscription, t
 import { ChangeDetectorRef, NgZone } from '@angular/core';
 
 import { Team, Category } from '../../../core/models/team';
-import { Wod } from '../../../core/models/wod';
+import { Wod, WodType } from '../../../core/models/wod';
 import { ScoreService } from '../../../core/services/score.service';
 import { TeamService } from '../../../core/services/team.service';
 import { WodService } from '../../../core/services/wod.service';
 
 type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
+
+/** ===== Tipos internos para renderizar y controlar segmentos ===== */
+type SegmentKind = 'reps_sequence' | 'time_driven' | 'lift';
+interface SegmentMovement {
+  name: string;
+  targetReps: number | null;   // null cuando no aplica (AMRAP/EMOM/etc)
+  loadKg?: number | null;
+  notes?: string;
+}
+interface CompiledSegment {
+  kind: SegmentKind;
+  label: string;                // título de UI
+  movements: SegmentMovement[]; // lista de movimientos del segmento
+  // Para time_driven
+  startAtSec?: number;          // segundo inicial relativo del segmento (solo informativo en UI)
+  endAtSec?: number;            // segundo final relativo del segmento (auto-avanze por tiempo)
+}
+interface CompiledWod {
+  mode: 'time' | 'reps' | 'load';
+  capSeconds: number | null;       // si existe, manda sobre todo
+  totalDurationSeconds: number | null; // para time_driven (amrap/emom/interval/tabata)
+  segments: CompiledSegment[];     // para reps_sequence o informativo en time_driven
+  isTimeDriven: boolean;           // true en amrap/emom/interval/tabata
+  isLift: boolean;                 // true en for_load
+}
 
 @Component({
   standalone: true,
@@ -101,7 +126,7 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
 
         <main class="main">
           <mat-card class="card slide-in">
-            <!-- Bloque de configuración inicial (FORM + PREPARAR) -->
+            <!-- Bloque de configuración inicial -->
             <ng-container *ngIf="!scoreReady(); else activeBlock">
               <form [formGroup]="form" class="grid">
                 <mat-form-field appearance="outline">
@@ -163,9 +188,9 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
               </div>
             </ng-container>
 
-            <!-- Bloque activo (solo info + controles) -->
+            <!-- Bloque activo (timer + ejercicios + controles) -->
             <ng-template #activeBlock>
-              <!-- Encabezado compacto con WOD y Equipo -->
+              <!-- Encabezado compacto -->
               <div class="active-head">
                 <div class="chip">
                   <mat-icon>fitness_center</mat-icon>
@@ -175,67 +200,30 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
                   <mat-icon>groups</mat-icon>
                   <span class="chip-txt">{{ form.getRawValue().teamName || 'Equipo' }}</span>
                 </div>
+                <div class="chip muted" *ngIf="compiled()?.capSeconds">
+                  <mat-icon>timer</mat-icon>
+                  <span class="chip-txt">Cap: {{ compiled()?.capSeconds!/60 | number:'1.0-0' }} min</span>
+                </div>
                 <div class="chip muted">
                   <mat-icon>category</mat-icon>
                   <span class="chip-txt">{{ form.getRawValue().category }}</span>
                 </div>
               </div>
 
-              <!-- CONTROLES -->
-              <div class="controls">
-                <!-- TIEMPO -->
-                <section class="timer card-soft" *ngIf="scoringModeVal === 'time'">
-                  <div class="time big" [class.pulse]="status()==='running'">
-                    {{ displayTime() | async }}
-                  </div>
+              <!-- Timer -->
+              <section class="timer card-soft" *ngIf="scoringModeVal === 'time' || compiled()?.isTimeDriven">
+                <div class="time big" [class.pulse]="status()==='running'">
+                  {{ displayTime() | async }}
+                </div>
+              </section>
 
-                  <div class="timer-actions center">
-                    <button class="btn-big" mat-raised-button color="primary"
-                      (click)="startTimer()" [disabled]="!canStart()">
-                      <mat-icon class="btn-ic">play_arrow</mat-icon> Start
-                    </button>
-
-                    <button class="btn-big" mat-raised-button color="warn"
-                      (click)="stopTimer()" [disabled]="!canStop()">
-                      <mat-icon class="btn-ic">pause</mat-icon> Stop
-                    </button>
-
-                    <button class="btn-big" mat-stroked-button
-                      (click)="finish()" [disabled]="!canFinish()">
-                      <mat-icon class="btn-ic">flag</mat-icon> Finalizar
-                    </button>
-
-                    <button class="btn-big" mat-stroked-button color="warn"
-                      (click)="markDNF()" [disabled]="!canDNF()">
-                      <mat-icon class="btn-ic">block</mat-icon> DNF
-                    </button>
-                  </div>
-                </section>
-
-                <!-- REPETICIONES (en time y en reps) -->
-                <section class="reps card-soft" *ngIf="scoringModeVal === 'reps' || scoringModeVal === 'time'">
-                  <div class="rep-counters center">
-                    Reps: <strong>{{ reps() }}</strong> &nbsp;|&nbsp; No-Reps: <strong>{{ noReps() }}</strong>
-                  </div>
-
-                  <div class="rep-actions center">
-                    <button class="btn-xl btn-rep" mat-raised-button
-                      (click)="incRep()" [disabled]="isLockedForInputs() || loading">
-                      <mat-icon class="btn-ic">add</mat-icon> rep
-                    </button>
-                    <button class="btn-xl btn-norep" mat-raised-button
-                      (click)="incNoRep()" [disabled]="isLockedForInputs() || loading">
-                      <mat-icon class="btn-ic">thumb_down</mat-icon> no-rep
-                    </button>
-                  </div>
-                </section>
-
-                <!-- CARGA -->
-                <section class="load card-soft" *ngIf="scoringModeVal === 'load'">
+              <!-- Panel de segmento/ejercicios -->
+              <section class="card-soft" *ngIf="compiled() as cw">
+                <!-- LIFT -->
+                <ng-container *ngIf="cw.isLift; else nonLift">
                   <div class="load-head center">
                     Mejor carga: <strong>{{ maxLoad() ?? 0 }}</strong> kg
                   </div>
-
                   <div class="row center">
                     <mat-form-field appearance="outline" class="load-input">
                       <mat-label>Carga (kg)</mat-label>
@@ -245,19 +233,93 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
                       <mat-icon class="btn-ic">save</mat-icon> Guardar intento
                     </button>
                   </div>
-
                   <div class="row center">
-                    <button mat-raised-button color="accent" class="btn-big" (click)="finish()" [disabled]="!canFinish()">
+                    <button class="btn-big" mat-raised-button color="accent" (click)="finish()" [disabled]="!canFinish()">
                       <mat-icon class="btn-ic">flag</mat-icon> Finalizar
                     </button>
-                    <button mat-stroked-button color="warn" class="btn-big" (click)="markDNF()" [disabled]="!canDNF()">
+                    <button class="btn-big" mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">
                       <mat-icon class="btn-ic">block</mat-icon> DNF
                     </button>
                   </div>
+                </ng-container>
 
-                  <div *ngIf="maxLoad() != null" class="row muted center">Máximo actual: {{ maxLoad() }} kg</div>
-                </section>
-              </div>
+                <!-- NO LIFT -->
+                <ng-template #nonLift>
+                  <!-- Secuencia por segmentos (FOR TIME / CHIPPER / BENCHMARK) -->
+                  <ng-container *ngIf="!cw.isTimeDriven; else timeDrivenTpl">
+                    <div class="center muted" *ngIf="cw.segments.length">
+                      Segmento {{ currentSegmentIndex()+1 }} / {{ cw.segments.length }}
+                    </div>
+
+                    <div class="segment">
+                      <div class="segment-title">
+                        {{ currentSegment()?.label || 'Segmento' }}
+                      </div>
+
+                      <div class="movements" *ngIf="currentSegment()?.movements?.length; else noMovs">
+                        <div class="mv" *ngFor="let mv of segmentMovements(); let i = index">
+                          <div class="mv-info">
+                            <strong>{{ mv.name }}</strong>
+                            <span class="muted" *ngIf="mv.targetReps != null">&nbsp;• {{ segmentRepsDone(i) }} / {{ mv.targetReps }}</span>
+                            <span class="muted" *ngIf="mv.targetReps == null">&nbsp;• Libre</span>
+                          </div>
+                          <div class="row">
+                            <button mat-raised-button class="btn-rep" (click)="incSegmentRep(i)" [disabled]="isLockedForInputs()">
+                              <mat-icon class="btn-ic">add</mat-icon> rep
+                            </button>
+                            <button mat-raised-button class="btn-norep" (click)="incNoRep()" [disabled]="isLockedForInputs()">
+                              <mat-icon class="btn-ic">thumb_down</mat-icon> no-rep
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <ng-template #noMovs>
+                        <div class="center muted">Sin movimientos en este segmento.</div>
+                      </ng-template>
+                    </div>
+
+                    <div class="row center" style="margin-top:10px;">
+                      <button class="btn-big" mat-stroked-button (click)="nextSegment()" [disabled]="!canGoNextSegment()">
+                        <mat-icon class="btn-ic">navigate_next</mat-icon> Siguiente segmento
+                      </button>
+                      <button class="btn-big" mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">
+                        <mat-icon class="btn-ic">block</mat-icon> DNF
+                      </button>
+                    </div>
+                  </ng-container>
+
+                  <!-- WODs dirigidos por tiempo (AMRAP / EMOM / INTERVAL / TABATA) -->
+                  <ng-template #timeDrivenTpl>
+                    <div class="center muted">
+                      {{ timeDrivenLabel() }}
+                    </div>
+
+                    <!-- En time-driven mantenemos botones globales de rep/no-rep -->
+                    <section class="reps card-soft" *ngIf="scoringModeVal === 'reps' || scoringModeVal === 'time'">
+                      <div class="rep-counters center">
+                        Reps: <strong>{{ reps() }}</strong> &nbsp;|&nbsp; No-Reps: <strong>{{ noReps() }}</strong>
+                      </div>
+
+                      <div class="rep-actions center">
+                        <button class="btn-xl btn-rep" mat-raised-button
+                          (click)="incRep()" [disabled]="isLockedForInputs() || loading">
+                          <mat-icon class="btn-ic">add</mat-icon> rep
+                        </button>
+                        <button class="btn-xl btn-norep" mat-raised-button
+                          (click)="incNoRep()" [disabled]="isLockedForInputs() || loading">
+                          <mat-icon class="btn-ic">thumb_down</mat-icon> no-rep
+                        </button>
+                      </div>
+                    </section>
+
+                    <div class="row center" style="margin-top:10px;">
+                      <button class="btn-big" mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">
+                        <mat-icon class="btn-ic">block</mat-icon> DNF
+                      </button>
+                    </div>
+                  </ng-template>
+                </ng-template>
+              </section>
             </ng-template>
           </mat-card>
         </main>
@@ -286,14 +348,12 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
     .card { background:#fff; border:1px solid #eee; border-radius:16px; padding:16px; max-width: 1100px; margin-inline:auto; }
     .card-soft { border:1px solid #f0f0f0; border-radius:14px; padding:12px; }
 
-    /* Grid responsive para el formulario */
     .grid { display:grid; grid-template-columns: 1fr; gap:12px; }
     .col-2 { grid-column: span 1; }
 
     .controls-top { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:12px; }
     .btn-ic { margin-right:6px; }
 
-    /* Bloque activo */
     .active-head {
       display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:center;
       margin-bottom: 10px;
@@ -320,29 +380,31 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
     .timer .time.pulse { animation: pulse 1.6s ease-in-out infinite; }
     .timer-actions { display:flex; gap:12px; flex-wrap:wrap; }
 
-    /* Botones grandes */
     .btn-big { padding: 12px 18px; font-size: 1.05rem; font-weight:700; border-radius:12px; }
     .btn-xl  { padding: 14px 24px; font-size: 1.1rem;  font-weight:800; border-radius:14px; min-width: 140px; }
 
-    /* Rep verde, No-rep rojo (accesible) */
-    .btn-rep   { background: #43a047; color:#fff; }   /* green 600 */
+    .btn-rep   { background: #43a047; color:#fff; }
     .btn-rep:hover { filter: brightness(1.05); }
-    .btn-norep { background: #e53935; color:#fff; }   /* red 600 */
+    .btn-norep { background: #e53935; color:#fff; }
     .btn-norep:hover { filter: brightness(1.05); }
 
     .rep-counters { font-weight:600; }
     .rep-actions  { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:center; }
 
+    .segment { display:grid; gap:10px; }
+    .segment-title { font-weight:800; color:#333; }
+    .movements { display:grid; gap:8px; }
+    .mv { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px; border:1px solid #f0f0f0; border-radius:12px; }
+    .mv-info { display:flex; align-items:center; gap:8px; }
+
     .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .load-input { width: 160px; }
     .muted { color:#9e9e9e; font-size:.95rem; }
 
-    /* Badges estado */
     .badge { padding:4px 10px; border-radius:999px; font-weight:700; letter-spacing:.3px; color:#fff; background:#c7c7c7; }
     .badge-running { background:#FC5500; } .badge-paused { background:#9e9e9e; }
     .badge-finished { background:#4caf50; } .badge-dnf { background:#f44336; }
 
-    /* Animaciones */
     @keyframes pulse {
       0% { box-shadow: 0 0 0 0 rgba(252,85,0,.35); transform: scale(1); }
       70% { box-shadow: 0 0 0 14px rgba(252,85,0,0); transform: scale(1.02); }
@@ -351,7 +413,6 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
     .slide-in { animation: slideIn .28s ease-out both; }
     @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* ===== Responsive ===== */
     @media (max-width: 599px) {
       .only-handset { display:inline-flex; }
       .hide-handset { display:none; }
@@ -376,40 +437,16 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
       .col-2 { grid-column: span 2; }
     }
 
-    /* === PARCHE: full-width en móviles para el formulario === */
-    .grid > mat-form-field,
-    .grid > .col-2,
-    .grid mat-form-field,
-    mat-form-field {
-      width: 100%;
-      min-width: 0; /* anula el min-width interno de Material */
-    }
+    .grid > mat-form-field, .grid > .col-2, .grid mat-form-field, mat-form-field { width: 100%; min-width: 0; }
 
-    /* Evita que el contenedor limite el ancho en móviles */
-    .card {
-      width: 100%;
-      max-width: none;
-      margin-inline: 0;
-    }
+    .card { width: 100%; max-width: none; margin-inline: 0; }
 
-    /* Espaciado y densidad mobile-first */
-    @media (max-width: 599px) {
-      .main { padding: 12px; }
-      .card { padding: 12px; border-radius: 14px; }
-      .grid { grid-template-columns: 1fr; gap: 10px; }
-
-      /* Campos más compactos en pantallas pequeñas */
-      .mat-mdc-form-field-infix { padding-top: 10px; padding-bottom: 10px; }
-    }
-
-    /* En pantallas medianas/grandes mantenemos el layout limpio, centrado */
     @media (min-width: 600px) and (max-width: 1199px) {
       .card { max-width: 920px; margin-inline: auto; }
     }
     @media (min-width: 1200px) {
       .card { max-width: 1100px; margin-inline: auto; }
     }
-
   `]
 })
 export class JudgePanelComponent implements OnDestroy, AfterViewInit {
@@ -421,16 +458,18 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
 
   private scoreSub?: Subscription;
   private destroy$ = new Subject<void>();
-  
 
   wods = signal<Wod[]>([]);
   teams = signal<Team[]>([]);
   selectedWod: Wod | null = null;
 
+  // Totales globales (persisten con ScoreService)
   reps = signal(0);
   noReps = signal(0);
   currentLoad = 0;
   maxLoad = signal<number | null>(null);
+
+  // Timer
   startedAt = signal<number | null>(null);
   finalTimeMs = signal<number | null>(null);
   status = signal<ScoreStatus>('not_started');
@@ -439,6 +478,14 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   private ticker: ReturnType<typeof setInterval> | null = null;
   private pausedOverride = false;
   private finishing = false;
+
+  // Compilación del WOD a segmentos
+  private compiledWod = signal<CompiledWod | null>(null);
+  compiled = this.compiledWod; // alias para template
+  private segmentIndex = signal(0);
+  currentSegmentIndex = this.segmentIndex;
+  // progreso local por movimiento del segmento actual
+  private segmentProgress: number[] = [];
 
   scoreId = signal<string | null>(null);
   scoreReady = signal(false);
@@ -494,10 +541,18 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   onSelectWod(wodId: string) {
     const wod = this.wods().find(w => w.id === wodId) || null;
     this.selectedWod = wod;
+
+    const capSeconds = this.deriveCapSecondsFromBlocks(wod);
+    const compiled = this.compileWod(wod, capSeconds);
+
+    this.compiledWod.set(compiled);
+    this.segmentIndex.set(0);
+    this.segmentProgress = new Array(this.segmentMovements().length).fill(0);
+
     this.form.patchValue({
       wodName: wod?.name || '',
       scoringMode: (wod?.scoringMode as any) || 'time',
-      capSeconds: this.deriveCapSecondsFromBlocks(wod)
+      capSeconds
     }, { emitEvent: false });
   }
 
@@ -512,7 +567,144 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     if (amrap?.minutes) return Number(amrap.minutes) * 60;
     const emom  = blocks.find((b: any) => b?.type === 'emom');
     if (emom?.minutes)  return Number(emom.minutes) * 60;
+    // Interval/Tabata duración total
+    const interval = blocks.find((b: any) => b?.type === 'interval');
+    if (interval?.workSeconds && interval?.restSeconds && interval?.rounds) {
+      return interval.workSeconds * interval.rounds + interval.restSeconds * interval.rounds;
+    }
+    const tabata = blocks.find((b: any) => b?.type === 'tabata');
+    if (tabata?.workSeconds && tabata?.restSeconds && tabata?.rounds) {
+      return tabata.workSeconds * tabata.rounds + tabata.restSeconds * tabata.rounds;
+    }
     return null;
+  }
+
+  /** Compila los bloques del WOD a un modelo común para UI */
+  private compileWod(wod: Wod | null, capSeconds: number | null): CompiledWod {
+    if (!wod) return { mode: 'time', capSeconds, totalDurationSeconds: capSeconds, segments: [], isTimeDriven: false, isLift: false };
+    const blocks = ((wod as any).blocks ?? []) as any[];
+
+    // Detectar tipos
+    const hasAmrap = blocks.some(b => b.type === 'amrap');
+    const hasEmom = blocks.some(b => b.type === 'emom');
+    const hasInterval = blocks.some(b => b.type === 'interval');
+    const hasTabata = blocks.some(b => b.type === 'tabata');
+    const isTimeDriven = hasAmrap || hasEmom || hasInterval || hasTabata;
+
+    const isLift = blocks.some(b => b.type === 'for_load');
+
+    // total duration para dirigidos por tiempo
+    let totalDurationSeconds: number | null = null;
+    if (hasAmrap) {
+      const b = blocks.find(x => x.type === 'amrap');
+      totalDurationSeconds = (b?.minutes ?? 0) * 60;
+    } else if (hasEmom) {
+      const b = blocks.find(x => x.type === 'emom');
+      totalDurationSeconds = (b?.minutes ?? 0) * 60;
+    } else if (hasInterval) {
+      const b = blocks.find(x => x.type === 'interval');
+      totalDurationSeconds = (b?.workSeconds ?? 0) * (b?.rounds ?? 0) + (b?.restSeconds ?? 0) * (b?.rounds ?? 0);
+    } else if (hasTabata) {
+      const b = blocks.find(x => x.type === 'tabata');
+      totalDurationSeconds = (b?.workSeconds ?? 0) * (b?.rounds ?? 0) + (b?.restSeconds ?? 0) * (b?.rounds ?? 0);
+    }
+
+    // Segments para secuencias por reps (for_time, chipper, benchmark)
+    const seqSegments: CompiledSegment[] = [];
+    const seqBlocks = blocks.filter(b => ['for_time', 'chipper', 'benchmark'].includes(b.type));
+    for (const b of seqBlocks) {
+      const label = (b.type === 'for_time') ? 'FOR TIME'
+                  : (b.type === 'chipper') ? 'CHIPPER'
+                  : `BENCHMARK${b.name ? ' • ' + b.name : ''}`;
+      const movements: SegmentMovement[] = (b.movements ?? []).map((m: any) => ({
+        name: String(m.name ?? 'Movimiento'),
+        targetReps: (m.reps != null ? Number(m.reps) : 0),
+        loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
+        notes: m.notes ?? ''
+      }));
+      // Creamos un segmento por bloque (dentro listamos los movimientos con sus reps)
+      seqSegments.push({ kind: 'reps_sequence', label, movements });
+    }
+
+    // Si no hay bloques de secuencia pero hay cap y scoring 'time', mantenemos vacío (AMRAP ya es time-driven)
+    const mode = (wod.scoringMode as any) ?? 'time';
+
+    return {
+      mode,
+      capSeconds: capSeconds ?? totalDurationSeconds ?? null,
+      totalDurationSeconds: totalDurationSeconds ?? null,
+      segments: seqSegments,
+      isTimeDriven,
+      isLift,
+    };
+  }
+
+  /** Helpers de segmento */
+  currentSegment(): CompiledSegment | null {
+    const cw = this.compiledWod();
+    if (!cw || !cw.segments.length) return null;
+    const idx = Math.max(0, Math.min(this.segmentIndex(), cw.segments.length - 1));
+    return cw.segments[idx] ?? null;
+  }
+  segmentMovements(): SegmentMovement[] {
+    return this.currentSegment()?.movements ?? [];
+  }
+  segmentRepsDone(i: number): number {
+    return this.segmentProgress[i] ?? 0;
+    }
+  private isCurrentSegmentComplete(): boolean {
+    const seg = this.currentSegment();
+    if (!seg) return true;
+    if (seg.kind !== 'reps_sequence') return true;
+    for (let i = 0; i < seg.movements.length; i++) {
+      const t = seg.movements[i].targetReps ?? 0;
+      const d = this.segmentRepsDone(i);
+      if (t > 0 && d < t) return false;
+    }
+    return true;
+  }
+  private isAllSequenceComplete(): boolean {
+    const cw = this.compiledWod();
+    if (!cw || !cw.segments.length) return false;
+    // Si el actual es el último y está completo -> todo completo
+    return (this.segmentIndex() === cw.segments.length - 1) && this.isCurrentSegmentComplete();
+  }
+  canGoNextSegment(): boolean {
+    const cw = this.compiledWod();
+    if (!cw || cw.isTimeDriven || cw.isLift) return false;
+    if (!this.scoreReady() || !this.scoreId()) return false;
+    if (this.status() === 'finished' || this.status() === 'dnf') return false;
+    // Solo si el actual está completo y no estamos en el último
+    return this.isCurrentSegmentComplete() && (this.segmentIndex() < cw.segments.length - 1);
+  }
+  nextSegment() {
+    if (!this.canGoNextSegment()) return;
+    this.segmentIndex.update(i => i + 1);
+    this.segmentProgress = new Array(this.segmentMovements().length).fill(0);
+  }
+
+  /** Texto informativo para time-driven */
+  timeDrivenLabel(): string {
+    const wod = this.selectedWod;
+    if (!wod) return '';
+    const blocks = ((wod as any).blocks ?? []) as any[];
+    if (blocks.some(b => b.type === 'amrap')) {
+      const b = blocks.find(x => x.type === 'amrap');
+      return `AMRAP • ${b?.minutes ?? '?'} min`;
+    }
+    if (blocks.some(b => b.type === 'emom')) {
+      const b = blocks.find(x => x.type === 'emom');
+      return `EMOM • ${b?.minutes ?? '?'} min`;
+    }
+    if (blocks.some(b => b.type === 'interval')) {
+      const b = blocks.find(x => x.type === 'interval');
+      return `INTERVAL • ${b?.rounds ?? '?'} rondas (${Math.round((b?.workSeconds ?? 0)/60)}' trabajo / ${Math.round((b?.restSeconds ?? 0)/60)}' descanso)`;
+    }
+    if (blocks.some(b => b.type === 'tabata')) {
+      const b = blocks.find(x => x.type === 'tabata');
+      return `TABATA • ${b?.rounds ?? '?'} rondas (${Math.round((b?.workSeconds ?? 0)/60)}' / ${Math.round((b?.restSeconds ?? 0)/60)}')`;
+    }
+    return '';
   }
 
   // ======= Timer helpers =======
@@ -524,11 +716,19 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
 
         if (this.status() === 'running' && this.startedAt() && !this.pausedOverride) {
           const elapsed = Date.now() - (this.startedAt() as number);
-          const timeStr = this.msToClock(elapsed);
-          this.timeDisplay$.next(timeStr);
+          this.timeDisplay$.next(this.msToClock(elapsed));
 
-          const cap = this.capSecondsVal;
+          // Timecap manda siempre
+          const cap = this.capSecondsVal ?? this.compiledWod()?.capSeconds ?? null;
           if (!this.finishing && cap && cap > 0 && elapsed >= cap * 1000) {
+            this.finishing = true;
+            this.finish().finally(() => { this.finishing = false; });
+            return;
+          }
+
+          // Auto-finish por secuencia completada
+          const cw = this.compiledWod();
+          if (cw && !cw.isTimeDriven && this.isAllSequenceComplete() && !this.finishing) {
             this.finishing = true;
             this.finish().finally(() => { this.finishing = false; });
           }
@@ -561,16 +761,17 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       wodId: v.wodId!, wodName: v.wodName || '',
       scoringMode: (this.selectedWod?.scoringMode as any) || v.scoringMode!,
       category: v.category!, teamId: v.teamId!, teamName: v.teamName!,
-      capSeconds: v.capSeconds ?? null,
+      capSeconds: v.capSeconds ?? (this.compiledWod()?.capSeconds ?? null),
     });
     this.scoreId.set(id);
-    this.scoreReady.set(true);           // 🔸 dispara el UI sólo-controles
+    this.scoreReady.set(true);
     this.currentLoad = 0;
     this.bindScore(id);
   }
 
   loading = false;
 
+  // Reps globales (AMRAP/time-driven o soporte extra)
   async incRep() {
     if (this.loading) return;
     this.loading = true;
@@ -579,7 +780,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       await this.scoreSvc.incrementReps(this.scoreId()!);
     } finally { this.loading = false; }
   }
-
   async incNoRep() {
     if (this.loading) return;
     this.loading = true;
@@ -587,6 +787,32 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       if (!this.scoreId()) { await this.prepareScore(); if (!this.scoreId()) return; }
       await this.scoreSvc.incrementNoReps(this.scoreId()!);
     } finally { this.loading = false; }
+  }
+
+  // Reps por movimiento de segmento (solo en secuencias por reps)
+  async incSegmentRep(movIndex: number) {
+    const seg = this.currentSegment();
+    if (!seg || seg.kind !== 'reps_sequence') return;
+    if (this.isLockedForInputs()) return;
+
+    // Sumar rep global para ranking/score
+    await this.incRep();
+
+    const t = seg.movements[movIndex].targetReps ?? 0;
+    const d = this.segmentRepsDone(movIndex);
+    if (t > 0 && d < t) {
+      this.segmentProgress[movIndex] = d + 1;
+      // si se completó todo el segmento, avanzar
+      if (this.isCurrentSegmentComplete()) {
+        // si es el último segmento -> autFinish (ticker también lo hace, pero lo forzamos para inmediatez)
+        const cw = this.compiledWod();
+        if (cw && this.segmentIndex() === cw.segments.length - 1) {
+          await this.finish();
+        } else {
+          this.nextSegment();
+        }
+      }
+    }
   }
 
   async saveAttempt() {
@@ -678,7 +904,9 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
           }
         }
 
-        if (s.capSeconds != null && s.capSeconds !== this.form.getRawValue().capSeconds) {
+        // Sync cap y scoring si se actualizan desde fuera
+        const capLocal = this.form.getRawValue().capSeconds;
+        if (s.capSeconds != null && s.capSeconds !== capLocal) {
           this.form.patchValue({ capSeconds: s.capSeconds }, { emitEvent: false });
         }
         if (s.scoringMode && s.scoringMode !== this.form.getRawValue().scoringMode) {
@@ -697,9 +925,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       && this.status() !== 'finished'
       && this.status() !== 'dnf';
   }
-  canStop(): boolean {
-    return this.scoreReady() && !!this.scoreId() && this.status() === 'running';
-  }
+  canStop(): boolean { return this.scoreReady() && !!this.scoreId() && this.status() === 'running'; }
   canFinish(): boolean {
     return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused');
   }
