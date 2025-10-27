@@ -81,6 +81,10 @@ import { ScoreService } from '../../core/services/score.service';
                 <mat-icon matListItemIcon>groups</mat-icon>
                 <span matListItemTitle>Admin Teams</span>
               </a>
+              <a mat-list-item routerLink="/admin/users" routerLinkActive="active" (click)="closeOnMobile(drawer)">
+                <mat-icon matListItemIcon>groups</mat-icon>
+                <span matListItemTitle>Admin Users</span>
+              </a>
             </ng-container>
 
             <!-- Panel Juez -->

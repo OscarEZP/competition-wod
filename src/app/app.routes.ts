@@ -2,6 +2,7 @@ import { Routes } from '@angular/router';
 import { HomeComponent } from './home/home.component';
 import { authGuard } from '../core/guards/auth.guard';
 import { roleGuard } from '../core/guards/role.guard';
+import { AdminUsersComponent } from './features/admin/users/admin-users.component';
 
 export const routes: Routes = [
   { path: '', component: HomeComponent, canActivate: [authGuard] },
@@ -45,7 +46,7 @@ export const routes: Routes = [
   {
   path: 'judge',
   canActivate: [authGuard, roleGuard],
-  data: { roles: ['admin', 'juez'] },
+  data: { roles: ['admin', 'judge'] },
   loadComponent: () => import('./features/judge/judge-panel.component').then(m => m.JudgePanelComponent),
 },
 {
@@ -53,6 +54,13 @@ export const routes: Routes = [
   canActivate: [authGuard],
   loadComponent: () => import('./features/leaderboard/leaderboard.component').then(m => m.LeaderboardComponent),
 },
+
+{
+    path: 'admin/users',
+    component: AdminUsersComponent,
+    canActivate: [roleGuard],
+    data: { roles: ['admin'] }, // <- SOLO admin
+  },
 
   // Auth
   {

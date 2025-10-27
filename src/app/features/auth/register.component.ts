@@ -23,6 +23,7 @@ import { AuthService } from '../../../core/services/auth.service';
     <!-- Contenido centrado -->
     <main class="center-wrap">
       <section class="card">
+        <img class="brand-logo" src="assets/uno-crossfit-logo.jpg" alt="UNO CrossFit" />
         <h1 class="h">Crear cuenta</h1>
 
         <form [formGroup]="form" (ngSubmit)="submit()" class="form-grid">
@@ -160,6 +161,16 @@ import { AuthService } from '../../../core/services/auth.service';
     }
 
     *, *::before, *::after { box-sizing: border-box; }
+
+    .brand-logo{
+      height: 130px;
+      width: auto;
+      display: block;
+      margin: 0 auto 10px; /* centrado encima del título */
+    }
+    @media (min-width:720px){
+      .brand-logo{ height: 52px; }
+    }
   `]
 })
 export class RegisterComponent {

@@ -20,11 +20,12 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatCardModule } from '@angular/material/card';
 
 import { ReactiveFormsModule, FormBuilder, Validators, FormsModule } from '@angular/forms';
-import { map, shareReplay, of } from 'rxjs';
+import { map, shareReplay } from 'rxjs';
 import { TeamService } from '../../../../core/services/team.service';
 import { Category, Team } from '../../../../core/models/team';
+import { AdminUserService } from '../../../../core/services/admin-user.service';
 
-type MemberVM = { id: string; displayName?: string; email?: string; name?: string };
+type MemberVM = { id: string; displayName?: string | null; email?: string | null; photoURL?: string | null };
 
 @Component({
   standalone: true,
@@ -224,7 +225,10 @@ type MemberVM = { id: string; displayName?: string; email?: string; name?: strin
 
         <mat-list *ngIf="!membersLoading && members?.length">
           <mat-list-item *ngFor="let m of members">
-            <mat-icon matListItemIcon>person</mat-icon>
+            <img matListItemIcon *ngIf="m.photoURL; else personIcon" [src]="m.photoURL" alt="" width="24" height="24" style="border-radius:50%; object-fit:cover;" />
+            <ng-template #personIcon>
+              <mat-icon matListItemIcon>person</mat-icon>
+            </ng-template>
             <div matListItemTitle>{{ m.displayName || '—' }}</div>
             <div matListItemLine class="mono">{{ m.email || m.id }}</div>
           </mat-list-item>
@@ -258,7 +262,7 @@ type MemberVM = { id: string; displayName?: string; email?: string; name?: strin
     /* ===== Form (mobile-first) ===== */
     .grid { display:grid; grid-template-columns: 1fr; gap:12px; align-items:end; width:100%; }
     .w { width:100%; min-width:0; }
-    .submit { justify-self: stretch; } /* botón full en móvil */
+    .submit { justify-self: stretch; }
 
     @media (min-width: 600px) {
       .grid { grid-template-columns: 1fr 220px auto; }
@@ -296,72 +300,16 @@ type MemberVM = { id: string; displayName?: string; email?: string; name?: strin
       .only-handset { display:inline-flex; }
       .side { width: 88vw; }
       .card { padding:12px; border-radius:14px; }
-      /* ocultamos tabla en móvil via *ngIf, pero por si acaso: */
       .table-wrap { display:none; }
-      .tc-actions button { flex: 1 1 calc(50% - 8px); } /* botones a 2 columnas */
+      .tc-actions button { flex: 1 1 calc(50% - 8px); }
     }
 
-    /* ======== FIX GLOBAL DE OVERFLOW EN MÓVIL ======== */
-:host, .layout-container, .content, .main, .card { max-width: 100%; }
-:host { display:block; }
-html, body { overflow-x: hidden; } /* por si algún overlay empuja 1px */
-.mat-sidenav-content { overflow-x: clip; } /* evita scroll por sombras */
-
-/* ======== FORM: MOBILE-FIRST FULL WIDTH ======== */
-.grid {
-  /* evita overflow por min-width internos */
-  grid-template-columns: minmax(0, 1fr);
-}
-.w { width: 100%; min-width: 0; }
-
-/* Angular Material pone min-width a los form fields; lo anulamos */
-.mat-mdc-form-field { width: 100%; min-width: 0 !important; }
-.mdc-text-field, .mdc-text-field__input { width: 100%; min-width: 0; }
-.mat-mdc-select { width: 100%; }
-
-/* Botón full en móvil */
-.submit { width: 100%; }
-
-/* ======== ESCALA EN SM+ SIN OVERFLOW ======== */
-@media (min-width: 600px) {
-  .grid {
-    /* usa minmax(0, …) para permitir encoger sin desbordar */
-    grid-template-columns: minmax(0, 1fr) 220px auto;
-  }
-  .submit { width: auto; }
-}
-
-/* ======== TARJETAS MÓVILES ======== */
-.cards, .team-card { width: 100%; max-width: 100%; }
-.team-card { box-sizing: border-box; }
-
-/* ======== TABLA: NUNCA ROMPER LÍNEA NI ANCHO DE PÁGINA ======== */
-.table-wrap {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: auto;   /* si alguna columna insiste, scroll solo del contenedor */
-  -webkit-overflow-scrolling: touch;
-}
-.teams-table { width: 100%; max-width: 100%; table-layout: auto; }
-.teams-table td, .teams-table th {
-  padding: 12px 14px;
-  white-space: nowrap; /* puedes quitarlo si quieres corte de línea */
-}
-
-/* ======== SIDENAV: SIN EMPUJAR EL LAYOUT EN MÓVIL ======== */
-.side { width: clamp(240px, 72vw, 270px); }
-@media (max-width: 599px) {
-  .only-handset { display:inline-flex; }
-  .side { width: 86vw; }                 /* más estrecho en móvil */
-  .main { padding: 12px; }
-  .card { padding: 12px; border-radius: 14px; }
-  .table-wrap { display: none; }         /* usamos cards en móvil */
-  .tc-actions button { flex: 1 1 calc(50% - 8px); } /* botones 2 col */
-}
-
-/* ======== BOX-SIZING PARA EVITAR SUMA DE PADDINGS ======== */
-*, *::before, *::after { box-sizing: border-box; }
-
+    /* ===== FIXES ===== */
+    :host, .layout-container, .content, .main, .card { max-width: 100%; }
+    :host { display:block; }
+    html, body { overflow-x: hidden; }
+    .mat-sidenav-content { overflow-x: clip; }
+    *, *::before, *::after { box-sizing: border-box; }
   `]
 })
 export class AdminTeamsComponent {
@@ -369,6 +317,7 @@ export class AdminTeamsComponent {
   private teamsSvc = inject(TeamService);
   private bpo = inject(BreakpointObserver);
   private dialog = inject(MatDialog);
+  private adminUsers = inject(AdminUserService);
 
   isHandset$ = this.bpo.observe([Breakpoints.Handset, '(max-width: 959px)'])
     .pipe(map(r => r.matches), shareReplay(1));
@@ -396,7 +345,7 @@ export class AdminTeamsComponent {
     this.teamsSvc.listAll$().subscribe(ts => this.teams = ts);
   }
 
-  /* ===== Lógica intacta ===== */
+  /* ===== CRUD equipos ===== */
   async create() {
     if (this.form.invalid) return;
     this.loading = true;
@@ -435,28 +384,36 @@ export class AdminTeamsComponent {
     this.members = [];
     this.membersLoading = true;
 
-    const anySvc = this.teamsSvc as any;
-    const source$ = typeof anySvc.getMembersDetails$ === 'function'
-      ? anySvc.getMembersDetails$(t.id)
-      : of((t.membersIds || []).map((id: string) => ({ id }) as MemberVM));
-
-    source$.subscribe((list: MemberVM[]) => {
-      this.members = (list || []).map(m => ({
-        id: m.id,
-        displayName: m.displayName || m['name'] || '',
-        email: m.email || ''
-      }));
-      this.membersLoading = false;
-    }, (_: any) => {
-      this.members = (t.membersIds || []).map(id => ({ id }));
-      this.membersLoading = false;
-    });
-
+    // Abre el diálogo primero; cargamos dentro
     this.dialog.open(tpl, {
       width: 'min(92vw, 560px)',
       maxWidth: '92vw',
       autoFocus: false,
     });
+
+    const ids = (t.membersIds || []).filter(Boolean);
+    if (!ids.length) {
+      this.membersLoading = false;
+      return;
+    }
+
+    // Carga desde colección users por IDs (usa chunk de 10 en el servicio)
+    this.adminUsers.getUsersByIds(ids)
+      .then(users => {
+        this.members = users.map(u => ({
+          id: u.uid,
+          displayName: u.displayName ?? '—',
+          email: u.email ?? null,
+        }));
+      })
+      .catch(err => {
+        console.error('[admin-teams] error cargando miembros', err);
+        // Fallback mínimo por si falla: mostrar solo IDs
+        this.members = ids.map(id => ({ id }));
+      })
+      .finally(() => {
+        this.membersLoading = false;
+      });
   }
 
   closeOnMobile(drawer: { close: () => void }) {

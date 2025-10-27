@@ -6,5 +6,5 @@ export interface AppUser {
   displayName?: string;
   role: Role;        // 'admin' | 'judge' | 'user'
   teamId?: string;   // se llenará en la Fase 3 (equipos)
-  createdAt: number; // Date.now()
+  createdAt: any; // Date.now()
 }

@@ -27,8 +27,8 @@ import { AuthService } from '../../../core/services/auth.service';
   template: `
     <div class="auth-wrap">
       <mat-card class="card-auth" appearance="outlined">
-        <header class="card-head">
-          <div class="brand-badge">CF</div>
+        <header class="card-head centered">
+          <img class="brand-logo" src="assets/uno-crossfit-logo.jpg" alt="UNO CrossFit" />
           <h1 class="title">Iniciar sesión</h1>
           <p class="subtitle">Bienvenido de nuevo 👋</p>
         </header>
@@ -137,6 +137,42 @@ import { AuthService } from '../../../core/services/auth.service';
 
     /* Anti overflow global */
     *,*::before,*::after{ box-sizing:border-box; }
+
+    .card-head.centered {
+      display: flex;
+      flex-direction: column;
+      align-items: center;     /* centra horizontalmente */
+      justify-content: center; /* centra verticalmente dentro del header */
+      gap: 8px;
+      text-align: center;      /* centra los textos también */
+      margin-bottom: 10px;
+    }
+
+    .brand-logo {
+      height: 130px;            /* ajusta según tamaño */
+      width: auto;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(1.3rem, 3.8vw, 1.6rem);
+      line-height: 1.2;
+      font-weight: 900;
+      color: #111;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: #6b7280;
+      font-size: .95rem;
+    }
+    @media (min-width: 720px) {
+      .brand-logo {
+        height: 130px;
+      }
+    }
   `]
 })
 export class LoginComponent {

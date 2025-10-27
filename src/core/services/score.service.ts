@@ -352,43 +352,54 @@ export class ScoreService {
     const ref = doc(this.db as any, 'scores', scoreId) as DocumentReference;
     const now = this.epochNow();
 
-    await runTransaction(this.db as any, async (trx) => {
-      const snap = await trx.get(ref);
-      if (!snap.exists()) throw new Error('Score no encontrado');
-      const data = snap.data() as Score;
+    try {
+      await runTransaction(this.db as any, async (trx) => {
+        const snap = await trx.get(ref);
+        if (!snap.exists()) throw new Error('Score no encontrado');
+        const data = snap.data() as Score;
 
-      if (data.status === 'finished') return; // idempotente
+        // idempotente: si ya está finalizado, salimos sin escribir
+        if (data.status === 'finished') return;
 
-      let finalTimeMs = data.finalTimeMs ?? null;
-
-      if (data.scoringMode === 'time') {
-        if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
-          finalTimeMs = elapsedMs;
-        } else if (data.startedAt && finalTimeMs == null) {
-          finalTimeMs = now - data.startedAt;
+        let finalTimeMs = data.finalTimeMs ?? null;
+        if (data.scoringMode === 'time') {
+          if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
+            finalTimeMs = elapsedMs;
+          } else if (data.startedAt && finalTimeMs == null) {
+            finalTimeMs = now - data.startedAt;
+          }
+        } else {
+          finalTimeMs = null;
         }
-      } else {
-        finalTimeMs = null;
+
+        const ranks = this.computeRanks({
+          scoringMode: data.scoringMode,
+          finalTimeMs,
+          capSeconds: data.capSeconds ?? null,
+          finished: true,
+          reps: data.reps || 0,
+          maxLoadKg: data.maxLoadKg ?? null,
+        }, now);
+
+        trx.update(ref, {
+          status: 'finished',
+          finalTimeMs,
+          rankPrimary: ranks.rankPrimary,
+          rankSecondary: ranks.rankSecondary,
+          updatedAt: serverTimestamp(),
+          updatedAtEpoch: now,
+        } as any);
+      });
+    } catch (e: any) {
+      // Si chocó la precondición, verificamos si YA quedó finalizado y en ese caso tratamos esto como éxito.
+      if (e?.code === 'failed-precondition' || e?.name === 'FirebaseError') {
+        const snap = await getDoc(ref);
+        if (snap.exists() && (snap.data() as Score).status === 'finished') {
+          return; // ya quedó finalizado por otro actor; consideramos éxito
+        }
       }
-
-      const ranks = this.computeRanks({
-        scoringMode: data.scoringMode,
-        finalTimeMs,
-        capSeconds: data.capSeconds ?? null,
-        finished: true,
-        reps: data.reps || 0,
-        maxLoadKg: data.maxLoadKg ?? null,
-      }, now);
-
-      trx.update(ref, {
-        status: 'finished',
-        finalTimeMs,
-        rankPrimary: ranks.rankPrimary,
-        rankSecondary: ranks.rankSecondary,
-        updatedAt: serverTimestamp(),
-        updatedAtEpoch: now,
-      } as any);
-    });
+      throw e; // otra cosa: propagar
+    }
   }
   
 

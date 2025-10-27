@@ -20,7 +20,7 @@ import { map, shareReplay, BehaviorSubject, Observable, Subject, Subscription, t
 import { ChangeDetectorRef, NgZone } from '@angular/core';
 
 import { Team, Category } from '../../../core/models/team';
-import { Wod, WodType } from '../../../core/models/wod';
+import { Wod } from '../../../core/models/wod';
 import { ScoreService } from '../../../core/services/score.service';
 import { TeamService } from '../../../core/services/team.service';
 import { WodService } from '../../../core/services/wod.service';
@@ -39,17 +39,17 @@ interface CompiledSegment {
   kind: SegmentKind;
   label: string;                // título de UI
   movements: SegmentMovement[]; // lista de movimientos del segmento
-  // Para time_driven
-  startAtSec?: number;          // segundo inicial relativo del segmento (solo informativo en UI)
-  endAtSec?: number;            // segundo final relativo del segmento (auto-avanze por tiempo)
+  // Para time_driven (informativo)
+  startAtSec?: number;
+  endAtSec?: number;
 }
 interface CompiledWod {
   mode: 'time' | 'reps' | 'load';
-  capSeconds: number | null;       // si existe, manda sobre todo
-  totalDurationSeconds: number | null; // para time_driven (amrap/emom/interval/tabata)
-  segments: CompiledSegment[];     // para reps_sequence o informativo en time_driven
-  isTimeDriven: boolean;           // true en amrap/emom/interval/tabata
-  isLift: boolean;                 // true en for_load
+  capSeconds: number | null;          // si existe, manda sobre todo
+  totalDurationSeconds: number | null;
+  segments: CompiledSegment[];        // secuencias por reps + time-driven (para mostrar)
+  isTimeDriven: boolean;              // AMRAP/EMOM/INTERVAL/TABATA
+  isLift: boolean;                    // FOR LOAD
 }
 
 @Component({
@@ -210,8 +210,8 @@ interface CompiledWod {
                 </div>
               </div>
 
-              <!-- Timer -->
-              <section class="timer card-soft" *ngIf="scoringModeVal === 'time' || compiled()?.isTimeDriven">
+              <!-- Timer: SIEMPRE visible (lo inicia Admin) -->
+              <section class="timer card-soft">
                 <div class="time big" [class.pulse]="status()==='running'">
                   {{ displayTime() | async }}
                 </div>
@@ -233,7 +233,9 @@ interface CompiledWod {
                       <mat-icon class="btn-ic">save</mat-icon> Guardar intento
                     </button>
                   </div>
-                  <div class="row center">
+
+                  <!-- Judge puede finalizar o marcar DNF -->
+                  <div class="row center" style="margin-top:10px;">
                     <button class="btn-big" mat-raised-button color="accent" (click)="finish()" [disabled]="!canFinish()">
                       <mat-icon class="btn-ic">flag</mat-icon> Finalizar
                     </button>
@@ -257,22 +259,37 @@ interface CompiledWod {
                       </div>
 
                       <div class="movements" *ngIf="currentSegment()?.movements?.length; else noMovs">
-                        <div class="mv" *ngFor="let mv of segmentMovements(); let i = index">
+                        <div class="mv" *ngFor="let mv of segmentMovements(); let i = index" [class.mv-done]="isMovementComplete(i)">
                           <div class="mv-info">
                             <strong>{{ mv.name }}</strong>
-                            <span class="muted" *ngIf="mv.targetReps != null">&nbsp;• {{ segmentRepsDone(i) }} / {{ mv.targetReps }}</span>
+                            <span class="muted" *ngIf="mv.targetReps != null">
+                              &nbsp;• {{ segmentRepsDone(i) }} / {{ mv.targetReps }}
+                            </span>
                             <span class="muted" *ngIf="mv.targetReps == null">&nbsp;• Libre</span>
                           </div>
-                          <div class="row">
-                            <button mat-raised-button class="btn-rep" (click)="incSegmentRep(i)" [disabled]="isLockedForInputs()">
-                              <mat-icon class="btn-ic">add</mat-icon> rep
+
+                          <div class="row mv-actions">
+                            <button
+                              mat-raised-button
+                              class="btn-rep btn-fw"
+                              (click)="incSegmentRep(i)"
+                              [disabled]="isLockedForInputs() || isMovementComplete(i) || isCurrentSegmentComplete()"
+                            >
+                              <mat-icon class="btn-ic">add</mat-icon> + rep
                             </button>
-                            <button mat-raised-button class="btn-norep" (click)="incNoRep()" [disabled]="isLockedForInputs()">
+
+                            <button
+                              mat-raised-button
+                              class="btn-norep btn-fw"
+                              (click)="incNoRep()"
+                              [disabled]="isLockedForInputs() || isCurrentSegmentComplete()"
+                            >
                               <mat-icon class="btn-ic">thumb_down</mat-icon> no-rep
                             </button>
                           </div>
                         </div>
                       </div>
+
                       <ng-template #noMovs>
                         <div class="center muted">Sin movimientos en este segmento.</div>
                       </ng-template>
@@ -282,8 +299,9 @@ interface CompiledWod {
                       <button class="btn-big" mat-stroked-button (click)="nextSegment()" [disabled]="!canGoNextSegment()">
                         <mat-icon class="btn-ic">navigate_next</mat-icon> Siguiente segmento
                       </button>
-                      <button class="btn-big" mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">
-                        <mat-icon class="btn-ic">block</mat-icon> DNF
+                      <button class="btn-big" mat-raised-button color="accent"
+                        (click)="finish()" [disabled]="!canFinish()">
+                        <mat-icon class="btn-ic">flag</mat-icon> Finalizar
                       </button>
                     </div>
                   </ng-container>
@@ -294,8 +312,19 @@ interface CompiledWod {
                       {{ timeDrivenLabel() }}
                     </div>
 
+                    <!-- Lista de movimientos del bloque time-driven -->
+                    <div class="movements card-soft" *ngIf="currentSegment()?.movements?.length">
+                      <div class="mv" *ngFor="let mv of currentSegment()!.movements">
+                        <div class="mv-info">
+                          <strong>{{ mv.name }}</strong>
+                          <span class="muted" *ngIf="mv.loadKg != null">&nbsp;• {{ mv.loadKg }} kg</span>
+                          <span class="muted" *ngIf="mv.notes">&nbsp;• {{ mv.notes }}</span>
+                        </div>
+                      </div>
+                    </div>
+
                     <!-- En time-driven mantenemos botones globales de rep/no-rep -->
-                    <section class="reps card-soft" *ngIf="scoringModeVal === 'reps' || scoringModeVal === 'time'">
+                    <section class="reps card-soft">
                       <div class="rep-counters center">
                         Reps: <strong>{{ reps() }}</strong> &nbsp;|&nbsp; No-Reps: <strong>{{ noReps() }}</strong>
                       </div>
@@ -313,8 +342,9 @@ interface CompiledWod {
                     </section>
 
                     <div class="row center" style="margin-top:10px;">
-                      <button class="btn-big" mat-stroked-button color="warn" (click)="markDNF()" [disabled]="!canDNF()">
-                        <mat-icon class="btn-ic">block</mat-icon> DNF
+                      <button class="btn-big" mat-raised-button color="accent"
+                        (click)="finish()" [disabled]="!canFinish()">
+                        <mat-icon class="btn-ic">flag</mat-icon> Finalizar
                       </button>
                     </div>
                   </ng-template>
@@ -378,7 +408,6 @@ interface CompiledWod {
     }
     .timer .time.big { padding: 12px 16px; }
     .timer .time.pulse { animation: pulse 1.6s ease-in-out infinite; }
-    .timer-actions { display:flex; gap:12px; flex-wrap:wrap; }
 
     .btn-big { padding: 12px 18px; font-size: 1.05rem; font-weight:700; border-radius:12px; }
     .btn-xl  { padding: 14px 24px; font-size: 1.1rem;  font-weight:800; border-radius:14px; min-width: 140px; }
@@ -422,7 +451,6 @@ interface CompiledWod {
       .grid { grid-template-columns: 1fr; }
       .col-2 { grid-column: span 1; }
 
-      .timer-actions { justify-content:center; }
       .btn-big { width: 100%; max-width: 280px; }
       .btn-xl  { width: calc(50% - 8px); min-width: unset; }
     }
@@ -447,6 +475,22 @@ interface CompiledWod {
     @media (min-width: 1200px) {
       .card { max-width: 1100px; margin-inline: auto; }
     }
+
+    /* Contenedor de acciones de cada movimiento */
+    .mv-actions {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    /* Botón full-width */
+    .btn-fw { width: 100%; }
+    /* En pantallas medianas+, lado a lado */
+    @media (min-width: 600px) {
+      .mv-actions { flex-direction: row; }
+      .mv-actions .btn-fw { flex: 1 1 0; }
+    }
+    .mv-done { opacity: .6; pointer-events: none; }
   `]
 })
 export class JudgePanelComponent implements OnDestroy, AfterViewInit {
@@ -484,7 +528,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   compiled = this.compiledWod; // alias para template
   private segmentIndex = signal(0);
   currentSegmentIndex = this.segmentIndex;
-  // progreso local por movimiento del segmento actual
+  // progreso local por movimiento del segmento actual (solo secuencias por reps)
   private segmentProgress: number[] = [];
 
   scoreId = signal<string | null>(null);
@@ -610,7 +654,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     }
 
     // Segments para secuencias por reps (for_time, chipper, benchmark)
-    const seqSegments: CompiledSegment[] = [];
+    const segs: CompiledSegment[] = [];
     const seqBlocks = blocks.filter(b => ['for_time', 'chipper', 'benchmark'].includes(b.type));
     for (const b of seqBlocks) {
       const label = (b.type === 'for_time') ? 'FOR TIME'
@@ -622,18 +666,70 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
         loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
         notes: m.notes ?? ''
       }));
-      // Creamos un segmento por bloque (dentro listamos los movimientos con sus reps)
-      seqSegments.push({ kind: 'reps_sequence', label, movements });
+      segs.push({ kind: 'reps_sequence', label, movements });
     }
 
-    // Si no hay bloques de secuencia pero hay cap y scoring 'time', mantenemos vacío (AMRAP ya es time-driven)
-    const mode = (wod.scoringMode as any) ?? 'time';
+    // Segments para time-driven (AMRAP / EMOM / INTERVAL / TABATA) — para mostrar ejercicios
+    if (isTimeDriven) {
+      const amrapBlock = blocks.find(b => b.type === 'amrap');
+      if (amrapBlock) {
+        const movements: SegmentMovement[] = (amrapBlock.movements ?? []).map((m: any) => ({
+          name: String(m.name ?? 'Movimiento'),
+          targetReps: null,
+          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
+          notes: m.notes ?? ''
+        }));
+        segs.push({ kind: 'time_driven', label: `AMRAP • ${amrapBlock.minutes ?? '?'} min`, movements });
+      }
 
+      const emomBlock = blocks.find(b => b.type === 'emom');
+      if (emomBlock) {
+        const movements: SegmentMovement[] = (emomBlock.perMinute ?? []).map((m: any) => ({
+          name: String(m.name ?? 'Movimiento'),
+          targetReps: null,
+          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
+          notes: m.notes ?? ''
+        }));
+        segs.push({ kind: 'time_driven', label: `EMOM • ${emomBlock.minutes ?? '?'} min`, movements });
+      }
+
+      const intervalBlock = blocks.find(b => b.type === 'interval');
+      if (intervalBlock) {
+        const movements: SegmentMovement[] = (intervalBlock.movements ?? []).map((m: any) => ({
+          name: String(m.name ?? 'Movimiento'),
+          targetReps: null,
+          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
+          notes: m.notes ?? ''
+        }));
+        segs.push({
+          kind: 'time_driven',
+          label: `INTERVAL • ${intervalBlock.rounds ?? '?'} rondas (${Math.round((intervalBlock.workSeconds ?? 0)/60)}' / ${Math.round((intervalBlock.restSeconds ?? 0)/60)}')`,
+          movements
+        });
+      }
+
+      const tabataBlock = blocks.find(b => b.type === 'tabata');
+      if (tabataBlock) {
+        const movements: SegmentMovement[] = (tabataBlock.movements ?? []).map((m: any) => ({
+          name: String(m.name ?? 'Movimiento'),
+          targetReps: null,
+          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
+          notes: m.notes ?? ''
+        }));
+        segs.push({
+          kind: 'time_driven',
+          label: `TABATA • ${tabataBlock.rounds ?? '?'} rondas (${Math.round((tabataBlock.workSeconds ?? 0)/60)}' / ${Math.round((tabataBlock.restSeconds ?? 0)/60)}')`,
+          movements
+        });
+      }
+    }
+
+    const mode = (wod.scoringMode as any) ?? 'time';
     return {
       mode,
       capSeconds: capSeconds ?? totalDurationSeconds ?? null,
       totalDurationSeconds: totalDurationSeconds ?? null,
-      segments: seqSegments,
+      segments: segs,
       isTimeDriven,
       isLift,
     };
@@ -651,8 +747,8 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   }
   segmentRepsDone(i: number): number {
     return this.segmentProgress[i] ?? 0;
-    }
-  private isCurrentSegmentComplete(): boolean {
+  }
+  isCurrentSegmentComplete(): boolean {
     const seg = this.currentSegment();
     if (!seg) return true;
     if (seg.kind !== 'reps_sequence') return true;
@@ -666,7 +762,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   private isAllSequenceComplete(): boolean {
     const cw = this.compiledWod();
     if (!cw || !cw.segments.length) return false;
-    // Si el actual es el último y está completo -> todo completo
     return (this.segmentIndex() === cw.segments.length - 1) && this.isCurrentSegmentComplete();
   }
   canGoNextSegment(): boolean {
@@ -674,7 +769,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     if (!cw || cw.isTimeDriven || cw.isLift) return false;
     if (!this.scoreReady() || !this.scoreId()) return false;
     if (this.status() === 'finished' || this.status() === 'dnf') return false;
-    // Solo si el actual está completo y no estamos en el último
     return this.isCurrentSegmentComplete() && (this.segmentIndex() < cw.segments.length - 1);
   }
   nextSegment() {
@@ -698,13 +792,40 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     }
     if (blocks.some(b => b.type === 'interval')) {
       const b = blocks.find(x => x.type === 'interval');
-      return `INTERVAL • ${b?.rounds ?? '?'} rondas (${Math.round((b?.workSeconds ?? 0)/60)}' trabajo / ${Math.round((b?.restSeconds ?? 0)/60)}' descanso)`;
+      return `INTERVAL • ${b?.rounds ?? '?'} rondas (${Math.round((b?.workSeconds ?? 0)/60)}' / ${Math.round((b?.restSeconds ?? 0)/60)}')`;
     }
     if (blocks.some(b => b.type === 'tabata')) {
       const b = blocks.find(x => x.type === 'tabata');
       return `TABATA • ${b?.rounds ?? '?'} rondas (${Math.round((b?.workSeconds ?? 0)/60)}' / ${Math.round((b?.restSeconds ?? 0)/60)}')`;
     }
     return '';
+  }
+
+  // ===== Timecap helpers =====
+  private get capMs(): number | null {
+    const cap = this.capSecondsVal ?? this.compiledWod()?.capSeconds ?? null;
+    return cap && cap > 0 ? cap * 1000 : null;
+  }
+
+  /** Detiene estrictamente por timecap (idempotente) */
+  private async stopByCap(elapsedMs: number): Promise<void> {
+    if (!this.scoreId() || this.finishing) return;
+
+    this.finishing = true;
+    try {
+      // Congela el tiempo en UI inmediatamente
+      this.finalTimeMs.set(elapsedMs);
+      this.status.set('finished');
+      this.pausedOverride = false;
+      this.stopTicker();
+
+      // Persiste como finalizado con el tiempo exacto del cap
+      await this.scoreSvc.finish(this.scoreId()!, elapsedMs);
+    } catch (e) {
+      console.error('stopByCap() error', e);
+    } finally {
+      this.finishing = false;
+    }
   }
 
   // ======= Timer helpers =======
@@ -718,15 +839,14 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
           const elapsed = Date.now() - (this.startedAt() as number);
           this.timeDisplay$.next(this.msToClock(elapsed));
 
-          // Timecap manda siempre
-          const cap = this.capSecondsVal ?? this.compiledWod()?.capSeconds ?? null;
-          if (!this.finishing && cap && cap > 0 && elapsed >= cap * 1000) {
-            this.finishing = true;
-            this.finish().finally(() => { this.finishing = false; });
+          // === ENFORCE HARDCAP ===
+          const capMillis = this.capMs;
+          if (capMillis && elapsed >= capMillis) {
+            this.stopByCap(capMillis).catch(console.error);
             return;
           }
 
-          // Auto-finish por secuencia completada
+          // Auto-finish por secuencia completada (solo secuencias por reps)
           const cw = this.compiledWod();
           if (cw && !cw.isTimeDriven && this.isAllSequenceComplete() && !this.finishing) {
             this.finishing = true;
@@ -757,11 +877,13 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     this.form.markAllAsTouched();
     if (!this.form.valid) { alert('Selecciona WOD y equipo'); return; }
     const v = this.form.getRawValue();
+    const normalizedCap = v.capSeconds ?? (this.compiledWod()?.capSeconds ?? null);
+
     const id = await this.scoreSvc.ensureScoreDoc({
       wodId: v.wodId!, wodName: v.wodName || '',
       scoringMode: (this.selectedWod?.scoringMode as any) || v.scoringMode!,
       category: v.category!, teamId: v.teamId!, teamName: v.teamName!,
-      capSeconds: v.capSeconds ?? (this.compiledWod()?.capSeconds ?? null),
+      capSeconds: normalizedCap,
     });
     this.scoreId.set(id);
     this.scoreReady.set(true);
@@ -789,38 +911,13 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     } finally { this.loading = false; }
   }
 
-  // Reps por movimiento de segmento (solo en secuencias por reps)
-  async incSegmentRep(movIndex: number) {
-    const seg = this.currentSegment();
-    if (!seg || seg.kind !== 'reps_sequence') return;
-    if (this.isLockedForInputs()) return;
-
-    // Sumar rep global para ranking/score
-    await this.incRep();
-
-    const t = seg.movements[movIndex].targetReps ?? 0;
-    const d = this.segmentRepsDone(movIndex);
-    if (t > 0 && d < t) {
-      this.segmentProgress[movIndex] = d + 1;
-      // si se completó todo el segmento, avanzar
-      if (this.isCurrentSegmentComplete()) {
-        // si es el último segmento -> autFinish (ticker también lo hace, pero lo forzamos para inmediatez)
-        const cw = this.compiledWod();
-        if (cw && this.segmentIndex() === cw.segments.length - 1) {
-          await this.finish();
-        } else {
-          this.nextSegment();
-        }
-      }
-    }
-  }
-
   async saveAttempt() {
     if (!this.scoreId()) { await this.prepareScore(); }
     const load = Number(this.currentLoad) || 0;
     await this.scoreSvc.addLoadAttempt(this.scoreId()!, load, true);
   }
 
+  // Mantengo estos métodos por compatibilidad; el juez no inicia/detiene desde UI
   async startTimer() {
     if (!this.scoreId()) { await this.prepareScore(); }
     if (this.status() === 'paused' && this.finalTimeMs()) {
@@ -850,17 +947,31 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   }
 
   async finish() {
-    if (!this.scoreId()) return;
+    if (!this.scoreId() || this.finishing) return;
+    this.finishing = true;
+    try {
+      // Calcula elapsed actual si corresponde
+      let elapsed = this.finalTimeMs() ?? 0;
+      if (this.status() === 'running' && this.startedAt()) {
+        elapsed = Date.now() - (this.startedAt() as number);
+      }
 
-    if (this.status() === 'running' && this.startedAt() && !this.finalTimeMs()) {
-      const elapsed = Date.now() - (this.startedAt() as number);
-      await this.scoreSvc.finish(this.scoreId()!, elapsed);
-    } else {
-      await this.scoreSvc.finish(this.scoreId()!);
+      // Si hay cap, el tiempo final es el mínimo entre elapsed y cap
+      const capMillis = this.capMs;
+      const finalMs = capMillis ? Math.min(elapsed, capMillis) : elapsed;
+
+      // Congela UI y persiste
+      this.finalTimeMs.set(finalMs);
+      this.status.set('finished');
+      this.pausedOverride = false;
+      this.stopTicker();
+
+      await this.scoreSvc.finish(this.scoreId()!, finalMs);
+    } catch (e: any) {
+      console.error('finish() error', e);
+    } finally {
+      this.finishing = false;
     }
-
-    this.pausedOverride = false;
-    this.stopTicker();
   }
 
   async markDNF() {
@@ -944,5 +1055,50 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   logout() {}
   closeOnMobile(drawer: { close: () => void }) {
     this.isHandset$.subscribe(isMobile => { if (isMobile) drawer.close(); }).unsubscribe();
+  }
+
+  isMovementComplete(i: number): boolean {
+    const seg = this.currentSegment();
+    if (!seg || seg.kind !== 'reps_sequence') return false;
+    const target = seg.movements[i].targetReps ?? 0;
+    return target > 0 && this.segmentRepsDone(i) >= target;
+  }
+
+  async incSegmentRep(movIndex: number) {
+    const seg = this.currentSegment();
+    if (!seg || seg.kind !== 'reps_sequence') return;
+    if (this.isLockedForInputs() || this.isMovementComplete(movIndex)) return;
+
+    // progreso local (optimista)
+    const prev = this.segmentRepsDone(movIndex);
+    const target = seg.movements[movIndex].targetReps ?? 0;
+
+    if (target > 0 && prev < target) {
+      this.segmentProgress[movIndex] = prev + 1;
+      // cambia la referencia para asegurar render even con OnPush
+      this.segmentProgress = [...this.segmentProgress];
+      this.cdr.markForCheck();
+    }
+
+    try {
+      // persiste en backend (suma al global)
+      await this.incRep();
+    } catch {
+      // rollback si falló
+      this.segmentProgress[movIndex] = prev;
+      this.segmentProgress = [...this.segmentProgress];
+      this.cdr.markForCheck();
+      return;
+    }
+
+    // si el segmento quedó completo, avanzar o finalizar
+    if (this.isCurrentSegmentComplete()) {
+      const cw = this.compiledWod();
+      if (cw && this.segmentIndex() === cw.segments.length - 1) {
+        await this.finish();
+      } else {
+        this.nextSegment();
+      }
+    }
   }
 }
