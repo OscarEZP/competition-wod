@@ -1,5 +1,5 @@
 // src/app/features/judge/judge-panel.component.ts
-import { Component, inject, signal, OnDestroy, AfterViewInit } from '@angular/core';
+import { Component, inject, signal, OnDestroy, AfterViewInit, ChangeDetectorRef, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
 
@@ -10,20 +10,23 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 
 import { MatIconModule } from '@angular/material/icon';
-import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatListModule } from '@angular/material/list';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { RouterLink } from '@angular/router';
 import { BreakpointObserver, Breakpoints } from '@angular/cdk/layout';
 import { map, shareReplay, BehaviorSubject, Observable, Subject, Subscription, takeUntil } from 'rxjs';
-import { ChangeDetectorRef, NgZone } from '@angular/core';
 
 import { Team, Category } from '../../../core/models/team';
 import { Wod } from '../../../core/models/wod';
 import { ScoreService } from '../../../core/services/score.service';
 import { TeamService } from '../../../core/services/team.service';
 import { WodService } from '../../../core/services/wod.service';
+import { AuthService } from '../../../core/services/auth.service';
+import { AppHeaderComponent } from '../../shared/ui/app-header.component';
+import { AppSideMenuComponent } from '../../shared/ui/app-side-menu.component';
+
+// ⬇️ Header y SideMenu compartidos
 
 type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
 
@@ -31,25 +34,24 @@ type ScoreStatus = 'not_started' | 'running' | 'paused' | 'finished' | 'dnf';
 type SegmentKind = 'reps_sequence' | 'time_driven' | 'lift';
 interface SegmentMovement {
   name: string;
-  targetReps: number | null;   // null cuando no aplica (AMRAP/EMOM/etc)
+  targetReps: number | null;
   loadKg?: number | null;
   notes?: string;
 }
 interface CompiledSegment {
   kind: SegmentKind;
-  label: string;                // título de UI
-  movements: SegmentMovement[]; // lista de movimientos del segmento
-  // Para time_driven (informativo)
+  label: string;
+  movements: SegmentMovement[];
   startAtSec?: number;
   endAtSec?: number;
 }
 interface CompiledWod {
   mode: 'time' | 'reps' | 'load';
-  capSeconds: number | null;          // si existe, manda sobre todo
+  capSeconds: number | null;
   totalDurationSeconds: number | null;
-  segments: CompiledSegment[];        // secuencias por reps + time-driven (para mostrar)
-  isTimeDriven: boolean;              // AMRAP/EMOM/INTERVAL/TABATA
-  isLift: boolean;                    // FOR LOAD
+  segments: CompiledSegment[];
+  isTimeDriven: boolean;
+  isLift: boolean;
 }
 
 @Component({
@@ -58,62 +60,37 @@ interface CompiledWod {
   imports: [
     CommonModule, FormsModule, ReactiveFormsModule,
     MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule,
-    MatIconModule, MatToolbarModule, MatSidenavModule, MatDividerModule, MatListModule,
-    RouterLink, RouterLinkActive,
+    MatIconModule, MatSidenavModule, MatDividerModule, MatListModule,
+    AppHeaderComponent, AppSideMenuComponent
   ],
   template: `
     <mat-sidenav-container class="layout-container">
-      <!-- Lateral -->
+      <!-- Sidebar -->
       <mat-sidenav #drawer class="side"
         [mode]="(isHandset$ | async) ? 'over' : 'side'"
         [opened]="!(isHandset$ | async)">
-        <div class="side-header">
-          <div class="brand">CF</div>
-          <div class="brand-txt">
-            <strong>CrossFit</strong>
-            <span>Competition</span>
-          </div>
-        </div>
-
-        <mat-nav-list>
-          <a mat-list-item routerLink="/dashboard" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>dashboard</mat-icon>
-            <span matListItemTitle>Dashboard</span>
-          </a>
-          <a mat-list-item routerLink="/leaderboard" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>leaderboard</mat-icon>
-            <span matListItemTitle>Resultados</span>
-          </a>
-          <a mat-list-item routerLink="/my-team" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>group</mat-icon>
-            <span matListItemTitle>Mi equipo</span>
-          </a>
-          <a mat-list-item routerLink="/judge" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>gavel</mat-icon>
-            <span matListItemTitle>Panel Juez</span>
-          </a>
-          <mat-divider></mat-divider>
-          <button mat-list-item (click)="logout(); closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>logout</mat-icon>
-            <span matListItemTitle>Salir</span>
-          </button>
-        </mat-nav-list>
+        <ng-container *ngIf="(auth.appUser$ | async) as user; else guestMenu">
+          <app-side-menu
+            [user]="user"
+            (logout)="logout()"
+            (item)="closeOnMobile(drawer)">
+          </app-side-menu>
+        </ng-container>
+        <ng-template #guestMenu>
+          <app-side-menu
+            [user]="null"
+            (item)="closeOnMobile(drawer)">
+          </app-side-menu>
+        </ng-template>
       </mat-sidenav>
 
       <!-- Contenido -->
       <mat-sidenav-content class="content">
-        <mat-toolbar class="app-toolbar" color="primary">
-          <button mat-icon-button class="only-handset" (click)="drawer.toggle()" aria-label="Abrir menú">
-            <mat-icon>menu</mat-icon>
-          </button>
-
-          <div class="toolbar-title">
-            <span class="logo">CF</span>
-            <span class="title">Panel de Juez</span>
-          </div>
-          <span class="spacer"></span>
-
-          <div class="status-badges hide-handset" *ngIf="scoreReady()">
+        <app-header
+          [title]="'Panel de Juez'"
+          (menu)="drawer.toggle()">
+          <!-- Badges de estado (solo desktop) -->
+          <div header-actions class="status-badges hide-handset" *ngIf="scoreReady()">
             <span class="badge"
                   [class.badge-running]="status()==='running'"
                   [class.badge-paused]="status()==='paused'"
@@ -122,7 +99,7 @@ interface CompiledWod {
               {{ status() | uppercase }}
             </span>
           </div>
-        </mat-toolbar>
+        </app-header>
 
         <main class="main">
           <mat-card class="card slide-in">
@@ -210,7 +187,7 @@ interface CompiledWod {
                 </div>
               </div>
 
-              <!-- Timer: SIEMPRE visible (lo inicia Admin) -->
+              <!-- Timer -->
               <section class="timer card-soft">
                 <div class="time big" [class.pulse]="status()==='running'">
                   {{ displayTime() | async }}
@@ -234,7 +211,6 @@ interface CompiledWod {
                     </button>
                   </div>
 
-                  <!-- Judge puede finalizar o marcar DNF -->
                   <div class="row center" style="margin-top:10px;">
                     <button class="btn-big" mat-raised-button color="accent" (click)="finish()" [disabled]="!canFinish()">
                       <mat-icon class="btn-ic">flag</mat-icon> Finalizar
@@ -247,7 +223,7 @@ interface CompiledWod {
 
                 <!-- NO LIFT -->
                 <ng-template #nonLift>
-                  <!-- Secuencia por segmentos (FOR TIME / CHIPPER / BENCHMARK) -->
+                  <!-- Secuencia por reps -->
                   <ng-container *ngIf="!cw.isTimeDriven; else timeDrivenTpl">
                     <div class="center muted" *ngIf="cw.segments.length">
                       Segmento {{ currentSegmentIndex()+1 }} / {{ cw.segments.length }}
@@ -306,13 +282,12 @@ interface CompiledWod {
                     </div>
                   </ng-container>
 
-                  <!-- WODs dirigidos por tiempo (AMRAP / EMOM / INTERVAL / TABATA) -->
+                  <!-- Time-driven -->
                   <ng-template #timeDrivenTpl>
                     <div class="center muted">
                       {{ timeDrivenLabel() }}
                     </div>
 
-                    <!-- Lista de movimientos del bloque time-driven -->
                     <div class="movements card-soft" *ngIf="currentSegment()?.movements?.length">
                       <div class="mv" *ngFor="let mv of currentSegment()!.movements">
                         <div class="mv-info">
@@ -323,7 +298,6 @@ interface CompiledWod {
                       </div>
                     </div>
 
-                    <!-- En time-driven mantenemos botones globales de rep/no-rep -->
                     <section class="reps card-soft">
                       <div class="rep-counters center">
                         Reps: <strong>{{ reps() }}</strong> &nbsp;|&nbsp; No-Reps: <strong>{{ noReps() }}</strong>
@@ -357,21 +331,10 @@ interface CompiledWod {
     </mat-sidenav-container>
   `,
   styles: [`
-    /* ===== Layout coherente con el resto ===== */
+    /* Layout coherente con el resto */
     .layout-container { height: 100dvh; background:#fff; }
     .side { width: 270px; border-right:1px solid #f1f1f1; display:flex; flex-direction:column; background:#fff; }
-    .side-header { display:flex; align-items:center; gap:10px; padding:16px 14px; }
-    .brand { width:36px; height:36px; border-radius:10px; display:grid; place-items:center; color:#fff; font-weight:800; background:#FC5500; }
-    .brand-txt span { color:#9e9e9e; font-size:.85rem; }
     .active { background: rgba(252,85,0,0.08); }
-
-    .app-toolbar { position: sticky; top: 0; z-index: 3; color:#fff; }
-    .toolbar-title { display:flex; align-items:center; gap:10px; }
-    .logo { background:#fff; color:#FC5500; border-radius:8px; padding:4px 8px; font-weight:800; }
-    .title { font-weight:700; color:#fff; }
-    .spacer { flex:1; }
-    .only-handset { display:none; }
-    .hide-handset { display:flex; gap:8px; }
 
     .content { height:100%; display:flex; flex-direction:column; }
     .main { padding:16px; display:grid; gap:16px; }
@@ -396,7 +359,6 @@ interface CompiledWod {
     .chip.muted { color:#6b7280; background:#fafafa; }
     .chip mat-icon { font-size:18px; height:18px; width:18px; line-height:18px; }
 
-    .controls { display:grid; gap:16px; margin-top:12px; }
     .center { justify-content:center; text-align:center; }
 
     .timer .time {
@@ -411,12 +373,8 @@ interface CompiledWod {
 
     .btn-big { padding: 12px 18px; font-size: 1.05rem; font-weight:700; border-radius:12px; }
     .btn-xl  { padding: 14px 24px; font-size: 1.1rem;  font-weight:800; border-radius:14px; min-width: 140px; }
-
     .btn-rep   { background: #43a047; color:#fff; }
-    .btn-rep:hover { filter: brightness(1.05); }
     .btn-norep { background: #e53935; color:#fff; }
-    .btn-norep:hover { filter: brightness(1.05); }
-
     .rep-counters { font-weight:600; }
     .rep-actions  { display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:center; }
 
@@ -442,6 +400,9 @@ interface CompiledWod {
     .slide-in { animation: slideIn .28s ease-out both; }
     @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
+    .only-handset { display:none; }
+    .hide-handset { display:flex; gap:8px; }
+
     @media (max-width: 599px) {
       .only-handset { display:inline-flex; }
       .hide-handset { display:none; }
@@ -454,38 +415,22 @@ interface CompiledWod {
       .btn-big { width: 100%; max-width: 280px; }
       .btn-xl  { width: calc(50% - 8px); min-width: unset; }
     }
-
     @media (min-width: 600px) and (max-width: 959px) {
       .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
       .col-2 { grid-column: span 2; }
     }
-
     @media (min-width: 960px) {
       .grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
       .col-2 { grid-column: span 2; }
     }
 
     .grid > mat-form-field, .grid > .col-2, .grid mat-form-field, mat-form-field { width: 100%; min-width: 0; }
-
     .card { width: 100%; max-width: none; margin-inline: 0; }
+    @media (min-width: 600px) and (max-width: 1199px) { .card { max-width: 920px; margin-inline: auto; } }
+    @media (min-width: 1200px) { .card { max-width: 1100px; margin-inline: auto; } }
 
-    @media (min-width: 600px) and (max-width: 1199px) {
-      .card { max-width: 920px; margin-inline: auto; }
-    }
-    @media (min-width: 1200px) {
-      .card { max-width: 1100px; margin-inline: auto; }
-    }
-
-    /* Contenedor de acciones de cada movimiento */
-    .mv-actions {
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    /* Botón full-width */
+    .mv-actions { width: 100%; display: flex; flex-direction: column; gap: 8px; }
     .btn-fw { width: 100%; }
-    /* En pantallas medianas+, lado a lado */
     @media (min-width: 600px) {
       .mv-actions { flex-direction: row; }
       .mv-actions .btn-fw { flex: 1 1 0; }
@@ -499,6 +444,9 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   private scoreSvc = inject(ScoreService);
   private teamSvc = inject(TeamService);
   private bpo = inject(BreakpointObserver);
+  private authSvc = inject(AuthService);
+
+  auth = this.authSvc; // para usar en el template
 
   private scoreSub?: Subscription;
   private destroy$ = new Subject<void>();
@@ -507,13 +455,11 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   teams = signal<Team[]>([]);
   selectedWod: Wod | null = null;
 
-  // Totales globales (persisten con ScoreService)
   reps = signal(0);
   noReps = signal(0);
   currentLoad = 0;
   maxLoad = signal<number | null>(null);
 
-  // Timer
   startedAt = signal<number | null>(null);
   finalTimeMs = signal<number | null>(null);
   status = signal<ScoreStatus>('not_started');
@@ -523,12 +469,10 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   private pausedOverride = false;
   private finishing = false;
 
-  // Compilación del WOD a segmentos
   private compiledWod = signal<CompiledWod | null>(null);
-  compiled = this.compiledWod; // alias para template
+  compiled = this.compiledWod;
   private segmentIndex = signal(0);
   currentSegmentIndex = this.segmentIndex;
-  // progreso local por movimiento del segmento actual (solo secuencias por reps)
   private segmentProgress: number[] = [];
 
   scoreId = signal<string | null>(null);
@@ -611,7 +555,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     if (amrap?.minutes) return Number(amrap.minutes) * 60;
     const emom  = blocks.find((b: any) => b?.type === 'emom');
     if (emom?.minutes)  return Number(emom.minutes) * 60;
-    // Interval/Tabata duración total
     const interval = blocks.find((b: any) => b?.type === 'interval');
     if (interval?.workSeconds && interval?.restSeconds && interval?.rounds) {
       return interval.workSeconds * interval.rounds + interval.restSeconds * interval.rounds;
@@ -623,28 +566,22 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     return null;
   }
 
-  /** Compila los bloques del WOD a un modelo común para UI */
   private compileWod(wod: Wod | null, capSeconds: number | null): CompiledWod {
     if (!wod) return { mode: 'time', capSeconds, totalDurationSeconds: capSeconds, segments: [], isTimeDriven: false, isLift: false };
     const blocks = ((wod as any).blocks ?? []) as any[];
 
-    // Detectar tipos
     const hasAmrap = blocks.some(b => b.type === 'amrap');
     const hasEmom = blocks.some(b => b.type === 'emom');
     const hasInterval = blocks.some(b => b.type === 'interval');
     const hasTabata = blocks.some(b => b.type === 'tabata');
     const isTimeDriven = hasAmrap || hasEmom || hasInterval || hasTabata;
-
     const isLift = blocks.some(b => b.type === 'for_load');
 
-    // total duration para dirigidos por tiempo
     let totalDurationSeconds: number | null = null;
     if (hasAmrap) {
-      const b = blocks.find(x => x.type === 'amrap');
-      totalDurationSeconds = (b?.minutes ?? 0) * 60;
+      const b = blocks.find(x => x.type === 'amrap'); totalDurationSeconds = (b?.minutes ?? 0) * 60;
     } else if (hasEmom) {
-      const b = blocks.find(x => x.type === 'emom');
-      totalDurationSeconds = (b?.minutes ?? 0) * 60;
+      const b = blocks.find(x => x.type === 'emom'); totalDurationSeconds = (b?.minutes ?? 0) * 60;
     } else if (hasInterval) {
       const b = blocks.find(x => x.type === 'interval');
       totalDurationSeconds = (b?.workSeconds ?? 0) * (b?.rounds ?? 0) + (b?.restSeconds ?? 0) * (b?.rounds ?? 0);
@@ -653,7 +590,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       totalDurationSeconds = (b?.workSeconds ?? 0) * (b?.rounds ?? 0) + (b?.restSeconds ?? 0) * (b?.rounds ?? 0);
     }
 
-    // Segments para secuencias por reps (for_time, chipper, benchmark)
     const segs: CompiledSegment[] = [];
     const seqBlocks = blocks.filter(b => ['for_time', 'chipper', 'benchmark'].includes(b.type));
     for (const b of seqBlocks) {
@@ -669,37 +605,28 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       segs.push({ kind: 'reps_sequence', label, movements });
     }
 
-    // Segments para time-driven (AMRAP / EMOM / INTERVAL / TABATA) — para mostrar ejercicios
     if (isTimeDriven) {
       const amrapBlock = blocks.find(b => b.type === 'amrap');
       if (amrapBlock) {
         const movements: SegmentMovement[] = (amrapBlock.movements ?? []).map((m: any) => ({
           name: String(m.name ?? 'Movimiento'),
-          targetReps: null,
-          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
-          notes: m.notes ?? ''
+          targetReps: null, loadKg: (m.loadKg ?? null), notes: m.notes ?? ''
         }));
         segs.push({ kind: 'time_driven', label: `AMRAP • ${amrapBlock.minutes ?? '?'} min`, movements });
       }
-
       const emomBlock = blocks.find(b => b.type === 'emom');
       if (emomBlock) {
         const movements: SegmentMovement[] = (emomBlock.perMinute ?? []).map((m: any) => ({
           name: String(m.name ?? 'Movimiento'),
-          targetReps: null,
-          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
-          notes: m.notes ?? ''
+          targetReps: null, loadKg: (m.loadKg ?? null), notes: m.notes ?? ''
         }));
         segs.push({ kind: 'time_driven', label: `EMOM • ${emomBlock.minutes ?? '?'} min`, movements });
       }
-
       const intervalBlock = blocks.find(b => b.type === 'interval');
       if (intervalBlock) {
         const movements: SegmentMovement[] = (intervalBlock.movements ?? []).map((m: any) => ({
           name: String(m.name ?? 'Movimiento'),
-          targetReps: null,
-          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
-          notes: m.notes ?? ''
+          targetReps: null, loadKg: (m.loadKg ?? null), notes: m.notes ?? ''
         }));
         segs.push({
           kind: 'time_driven',
@@ -707,14 +634,11 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
           movements
         });
       }
-
       const tabataBlock = blocks.find(b => b.type === 'tabata');
       if (tabataBlock) {
         const movements: SegmentMovement[] = (tabataBlock.movements ?? []).map((m: any) => ({
           name: String(m.name ?? 'Movimiento'),
-          targetReps: null,
-          loadKg: (m.loadKg != null ? Number(m.loadKg) : null),
-          notes: m.notes ?? ''
+          targetReps: null, loadKg: (m.loadKg ?? null), notes: m.notes ?? ''
         }));
         segs.push({
           kind: 'time_driven',
@@ -725,33 +649,20 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     }
 
     const mode = (wod.scoringMode as any) ?? 'time';
-    return {
-      mode,
-      capSeconds: capSeconds ?? totalDurationSeconds ?? null,
-      totalDurationSeconds: totalDurationSeconds ?? null,
-      segments: segs,
-      isTimeDriven,
-      isLift,
-    };
+    return { mode, capSeconds: capSeconds ?? totalDurationSeconds ?? null, totalDurationSeconds, segments: segs, isTimeDriven, isLift };
   }
 
-  /** Helpers de segmento */
   currentSegment(): CompiledSegment | null {
     const cw = this.compiledWod();
     if (!cw || !cw.segments.length) return null;
     const idx = Math.max(0, Math.min(this.segmentIndex(), cw.segments.length - 1));
     return cw.segments[idx] ?? null;
   }
-  segmentMovements(): SegmentMovement[] {
-    return this.currentSegment()?.movements ?? [];
-  }
-  segmentRepsDone(i: number): number {
-    return this.segmentProgress[i] ?? 0;
-  }
+  segmentMovements(): SegmentMovement[] { return this.currentSegment()?.movements ?? []; }
+  segmentRepsDone(i: number): number { return this.segmentProgress[i] ?? 0; }
   isCurrentSegmentComplete(): boolean {
     const seg = this.currentSegment();
-    if (!seg) return true;
-    if (seg.kind !== 'reps_sequence') return true;
+    if (!seg || seg.kind !== 'reps_sequence') return true;
     for (let i = 0; i < seg.movements.length; i++) {
       const t = seg.movements[i].targetReps ?? 0;
       const d = this.segmentRepsDone(i);
@@ -777,18 +688,15 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     this.segmentProgress = new Array(this.segmentMovements().length).fill(0);
   }
 
-  /** Texto informativo para time-driven */
   timeDrivenLabel(): string {
     const wod = this.selectedWod;
     if (!wod) return '';
     const blocks = ((wod as any).blocks ?? []) as any[];
     if (blocks.some(b => b.type === 'amrap')) {
-      const b = blocks.find(x => x.type === 'amrap');
-      return `AMRAP • ${b?.minutes ?? '?'} min`;
+      const b = blocks.find(x => x.type === 'amrap'); return `AMRAP • ${b?.minutes ?? '?'} min`;
     }
     if (blocks.some(b => b.type === 'emom')) {
-      const b = blocks.find(x => x.type === 'emom');
-      return `EMOM • ${b?.minutes ?? '?'} min`;
+      const b = blocks.find(x => x.type === 'emom'); return `EMOM • ${b?.minutes ?? '?'} min`;
     }
     if (blocks.some(b => b.type === 'interval')) {
       const b = blocks.find(x => x.type === 'interval');
@@ -801,34 +709,25 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     return '';
   }
 
-  // ===== Timecap helpers =====
   private get capMs(): number | null {
     const cap = this.capSecondsVal ?? this.compiledWod()?.capSeconds ?? null;
     return cap && cap > 0 ? cap * 1000 : null;
   }
 
-  /** Detiene estrictamente por timecap (idempotente) */
   private async stopByCap(elapsedMs: number): Promise<void> {
     if (!this.scoreId() || this.finishing) return;
-
     this.finishing = true;
     try {
-      // Congela el tiempo en UI inmediatamente
       this.finalTimeMs.set(elapsedMs);
       this.status.set('finished');
       this.pausedOverride = false;
       this.stopTicker();
-
-      // Persiste como finalizado con el tiempo exacto del cap
       await this.scoreSvc.finish(this.scoreId()!, elapsedMs);
-    } catch (e) {
-      console.error('stopByCap() error', e);
     } finally {
       this.finishing = false;
     }
   }
 
-  // ======= Timer helpers =======
   private startTicker() {
     this.stopTicker();
     this.ticker = setInterval(() => {
@@ -839,14 +738,12 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
           const elapsed = Date.now() - (this.startedAt() as number);
           this.timeDisplay$.next(this.msToClock(elapsed));
 
-          // === ENFORCE HARDCAP ===
           const capMillis = this.capMs;
           if (capMillis && elapsed >= capMillis) {
             this.stopByCap(capMillis).catch(console.error);
             return;
           }
 
-          // Auto-finish por secuencia completada (solo secuencias por reps)
           const cw = this.compiledWod();
           if (cw && !cw.isTimeDriven && this.isAllSequenceComplete() && !this.finishing) {
             this.finishing = true;
@@ -858,9 +755,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       });
     }, 100);
   }
-  private stopTicker() {
-    if (this.ticker) { clearInterval(this.ticker); this.ticker = null; }
-  }
+  private stopTicker() { if (this.ticker) { clearInterval(this.ticker); this.ticker = null; } }
 
   displayTime(): Observable<string> { return this.timeDisplay$.asObservable(); }
 
@@ -872,7 +767,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     return `${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}.${cs.toString().padStart(2,'0')}`;
   }
 
-  // ======= Flujo =======
   async prepareScore() {
     this.form.markAllAsTouched();
     if (!this.form.valid) { alert('Selecciona WOD y equipo'); return; }
@@ -893,7 +787,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
 
   loading = false;
 
-  // Reps globales (AMRAP/time-driven o soporte extra)
   async incRep() {
     if (this.loading) return;
     this.loading = true;
@@ -917,7 +810,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     await this.scoreSvc.addLoadAttempt(this.scoreId()!, load, true);
   }
 
-  // Mantengo estos métodos por compatibilidad; el juez no inicia/detiene desde UI
   async startTimer() {
     if (!this.scoreId()) { await this.prepareScore(); }
     if (this.status() === 'paused' && this.finalTimeMs()) {
@@ -933,9 +825,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   }
 
   async stopTimer() {
-    if (!this.scoreId()) return;
-    if (this.status() !== 'running') return;
-
+    if (!this.scoreId() || this.status() !== 'running') return;
     if (this.startedAt()) {
       const elapsed = Date.now() - (this.startedAt() as number);
       this.finalTimeMs.set(elapsed);
@@ -950,25 +840,19 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     if (!this.scoreId() || this.finishing) return;
     this.finishing = true;
     try {
-      // Calcula elapsed actual si corresponde
       let elapsed = this.finalTimeMs() ?? 0;
       if (this.status() === 'running' && this.startedAt()) {
         elapsed = Date.now() - (this.startedAt() as number);
       }
-
-      // Si hay cap, el tiempo final es el mínimo entre elapsed y cap
       const capMillis = this.capMs;
       const finalMs = capMillis ? Math.min(elapsed, capMillis) : elapsed;
 
-      // Congela UI y persiste
       this.finalTimeMs.set(finalMs);
       this.status.set('finished');
       this.pausedOverride = false;
       this.stopTicker();
 
       await this.scoreSvc.finish(this.scoreId()!, finalMs);
-    } catch (e: any) {
-      console.error('finish() error', e);
     } finally {
       this.finishing = false;
     }
@@ -1015,7 +899,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
           }
         }
 
-        // Sync cap y scoring si se actualizan desde fuera
         const capLocal = this.form.getRawValue().capSeconds;
         if (s.capSeconds != null && s.capSeconds !== capLocal) {
           this.form.patchValue({ capSeconds: s.capSeconds }, { emitEvent: false });
@@ -1026,7 +909,6 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       });
   }
 
-  // ======= Habilitaciones UI =======
   isLockedForInputs(): boolean {
     return !this.scoreReady() || !this.scoreId() || this.status() === 'finished' || this.status() === 'dnf';
   }
@@ -1037,12 +919,8 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
       && this.status() !== 'dnf';
   }
   canStop(): boolean { return this.scoreReady() && !!this.scoreId() && this.status() === 'running'; }
-  canFinish(): boolean {
-    return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused');
-  }
-  canDNF(): boolean {
-    return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused');
-  }
+  canFinish(): boolean { return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused'); }
+  canDNF(): boolean { return this.scoreReady() && !!this.scoreId() && (this.status() === 'running' || this.status() === 'paused'); }
 
   ngOnDestroy() {
     this.scoreSub?.unsubscribe();
@@ -1052,7 +930,7 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
   }
 
   // ======= Helpers layout =======
-  logout() {}
+  logout() { this.authSvc.logout(); }
   closeOnMobile(drawer: { close: () => void }) {
     this.isHandset$.subscribe(isMobile => { if (isMobile) drawer.close(); }).unsubscribe();
   }
@@ -1069,29 +947,24 @@ export class JudgePanelComponent implements OnDestroy, AfterViewInit {
     if (!seg || seg.kind !== 'reps_sequence') return;
     if (this.isLockedForInputs() || this.isMovementComplete(movIndex)) return;
 
-    // progreso local (optimista)
     const prev = this.segmentRepsDone(movIndex);
     const target = seg.movements[movIndex].targetReps ?? 0;
 
     if (target > 0 && prev < target) {
       this.segmentProgress[movIndex] = prev + 1;
-      // cambia la referencia para asegurar render even con OnPush
       this.segmentProgress = [...this.segmentProgress];
       this.cdr.markForCheck();
     }
 
     try {
-      // persiste en backend (suma al global)
       await this.incRep();
     } catch {
-      // rollback si falló
       this.segmentProgress[movIndex] = prev;
       this.segmentProgress = [...this.segmentProgress];
       this.cdr.markForCheck();
       return;
     }
 
-    // si el segmento quedó completo, avanzar o finalizar
     if (this.isCurrentSegmentComplete()) {
       const cw = this.compiledWod();
       if (cw && this.segmentIndex() === cw.segments.length - 1) {

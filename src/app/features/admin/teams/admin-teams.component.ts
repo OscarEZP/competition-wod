@@ -24,6 +24,9 @@ import { map, shareReplay } from 'rxjs';
 import { TeamService } from '../../../../core/services/team.service';
 import { Category, Team } from '../../../../core/models/team';
 import { AdminUserService } from '../../../../core/services/admin-user.service';
+import { AppHeaderComponent } from '../../../shared/ui/app-header.component';
+import { AppSideMenuComponent } from '../../../shared/ui/app-side-menu.component';
+import { AuthService } from '../../../../core/services/auth.service';
 
 type MemberVM = { id: string; displayName?: string | null; email?: string | null; photoURL?: string | null };
 
@@ -34,7 +37,7 @@ type MemberVM = { id: string; displayName?: string | null; email?: string | null
     CommonModule,
     // Layout shell
     MatToolbarModule, MatSidenavModule, MatIconModule, MatListModule, MatDividerModule,
-    RouterLink, RouterLinkActive,
+    AppHeaderComponent, AppSideMenuComponent,
     // UI
     MatTableModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatButtonModule,
     MatDialogModule, MatChipsModule, MatProgressSpinnerModule, MatCardModule,
@@ -45,49 +48,26 @@ type MemberVM = { id: string; displayName?: string | null; email?: string | null
       <mat-sidenav #drawer class="side"
         [mode]="(isHandset$ | async) ? 'over' : 'side'"
         [opened]="!(isHandset$ | async)">
-        <div class="side-header">
-          <div class="brand">CF</div>
-          <div class="brand-txt">
-            <strong>CrossFit</strong>
-            <span>Competition</span>
-          </div>
-        </div>
-
-        <mat-nav-list>
-          <a mat-list-item routerLink="/dashboard" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>dashboard</mat-icon>
-            <span matListItemTitle>Dashboard</span>
-          </a>
-          <a mat-list-item routerLink="/leaderboard" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>emoji_events</mat-icon>
-            <span matListItemTitle>Leaderboard</span>
-          </a>
-          <a mat-list-item routerLink="/my-team" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>group</mat-icon>
-            <span matListItemTitle>Mi equipo</span>
-          </a>
-          <a mat-list-item routerLink="/judge" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>gavel</mat-icon>
-            <span matListItemTitle>Panel Juez</span>
-          </a>
-          <a mat-list-item routerLink="/admin" routerLinkActive="active" (click)="closeOnMobile(drawer)">
-            <mat-icon matListItemIcon>admin_panel_settings</mat-icon>
-            <span matListItemTitle>Admin</span>
-          </a>
-        </mat-nav-list>
+        <ng-container *ngIf="(auth.appUser$ | async) as user; else guestMenu">
+          <app-side-menu
+            [user]="user"
+            (logout)="logout()"
+            (item)="closeOnMobile(drawer)">
+          </app-side-menu>
+        </ng-container>
+        <ng-template #guestMenu>
+          <app-side-menu
+            [user]="null"
+            (item)="closeOnMobile(drawer)">
+          </app-side-menu>
+        </ng-template>
       </mat-sidenav>
 
       <mat-sidenav-content class="content">
-        <mat-toolbar class="app-toolbar" color="primary">
-          <button mat-icon-button class="only-handset" (click)="drawer.toggle()" aria-label="Abrir menú">
-            <mat-icon>menu</mat-icon>
-          </button>
-          <div class="toolbar-title">
-            <span class="logo">CF</span>
-            <span class="title">Equipos (Admin)</span>
-          </div>
-          <span class="spacer"></span>
-        </mat-toolbar>
+        <app-header
+          [title]="'Panel de Juez'"
+          (menu)="drawer.toggle()">
+        </app-header>
 
         <main class="main">
           <!-- Crear equipo -->
@@ -318,6 +298,7 @@ export class AdminTeamsComponent {
   private bpo = inject(BreakpointObserver);
   private dialog = inject(MatDialog);
   private adminUsers = inject(AdminUserService);
+  auth = inject(AuthService);
 
   isHandset$ = this.bpo.observe([Breakpoints.Handset, '(max-width: 959px)'])
     .pipe(map(r => r.matches), shareReplay(1));
@@ -419,4 +400,6 @@ export class AdminTeamsComponent {
   closeOnMobile(drawer: { close: () => void }) {
     this.isHandset$.subscribe(isMobile => { if (isMobile) drawer.close(); }).unsubscribe();
   }
+
+  logout() { this.auth.logout(); }
 }
